@@ -1,0 +1,142 @@
+"""Hand-check of document labels (spec, "Labels" step 3) and the label profile (step 4).
+
+Usage:
+    uv run python -m finra_nlp.labels sample            # writes data/label_handcheck.csv
+    uv run python -m finra_nlp.labels score             # precision/recall vs. the 0.98 gate
+    uv run python -m finra_nlp.labels profile           # writes reports/label_profile.md
+
+Hand-check: open each doc_url, correct true_rules (prefilled with the extracted labels, keys
+joined by "|", e.g. FINRA:3110|FINRA:2010), and set checked to Y.
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+from pathlib import Path
+
+import duckdb
+import pandas as pd
+
+GATE = 0.98
+TRAIN_YEARS = (2016, 2022)
+MIN_SERIES_CASES = 30
+CATCH_ALL = "FINRA:2010"
+
+
+def _set(s: str) -> set[str]:
+    return {x.strip() for x in (s or "").split("|") if x.strip()}
+
+
+def series_label(key: str) -> str:
+    """FINRA:3110 -> FINRA:3000; NASD:3010 -> NASD:3000; other families keep only the family."""
+    family, _, rule = key.partition(":")
+    if family in ("FINRA", "NASD"):
+        m = re.match(r"(?:IM-)?(\d+)", rule)
+        return f"{family}:{int(m.group(1)) // 1000 * 1000}" if m else family
+    return family
+
+
+def _cases(con) -> pd.DataFrame:
+    return con.execute(
+        """SELECT m.case_no, m.report_month, m.section, m.action_date, m.summary_rules,
+                  d.doc_url, d.doc_rules
+           FROM raw.monthly_cases m LEFT JOIN raw.case_document_labels d USING (case_no)"""
+    ).df()
+
+
+def sample(db: str, out: str, n: int = 100, seed: int = 42) -> None:
+    con = duckdb.connect(db, read_only=True)
+    df = _cases(con)
+    con.close()
+    df = df[df.doc_rules.fillna("") != ""]
+    picked = df.sample(n=min(n, len(df)), random_state=seed)[["case_no", "doc_url", "doc_rules"]].copy()
+    picked["true_rules"] = picked.doc_rules
+    picked["checked"] = ""
+    picked["notes"] = ""
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    picked.to_csv(out, index=False)
+    print(f"Wrote {len(picked)} cases to {out}")
+
+
+def score(csv: str) -> tuple[float, float]:
+    df = pd.read_csv(csv, dtype=str).fillna("")
+    df = df[df.checked.str.upper().str.strip() == "Y"]
+    tp = fp = fn = 0
+    for pred, true in zip(df.doc_rules, df.true_rules):
+        p, t = _set(pred), _set(true)
+        tp, fp, fn = tp + len(p & t), fp + len(p - t), fn + len(t - p)
+    precision = tp / (tp + fp) if tp + fp else float("nan")
+    recall = tp / (tp + fn) if tp + fn else float("nan")
+    verdict = "PASS" if precision >= GATE and recall >= GATE else "FAIL"
+    print(f"{len(df)} cases checked: precision {precision:.3f}, recall {recall:.3f} (gate {GATE}) {verdict}")
+    return precision, recall
+
+
+def profile(db: str, out: str) -> str:
+    con = duckdb.connect(db, read_only=True)
+    df = _cases(con)
+    con.close()
+    df["year"] = pd.to_numeric(df.report_month.str[:4], errors="coerce")
+    df["doc_set"] = df.doc_rules.fillna("").map(_set)
+    df["sum_set"] = df.summary_rules.fillna("").map(_set)
+    labeled = df[df.doc_set.map(bool)]
+
+    lines = ["# Label profile", ""]
+    by_year = df.groupby("year").agg(
+        cases=("case_no", "size"),
+        with_doc_labels=("doc_set", lambda s: int(s.map(bool).sum())),
+        summary_cites_any=("sum_set", lambda s: round(s.map(bool).mean(), 3)),
+    )
+    lines += ["## Cases by report year", "", by_year.to_markdown(), ""]
+
+    share_2010 = labeled.doc_set.map(lambda s: CATCH_ALL in s).mean()
+    lines += [f"Rule 2010 appears in {share_2010:.1%} of labeled cases and is dropped as a label.", ""]
+
+    train = labeled[labeled.year.between(*TRAIN_YEARS)]
+    counts: dict[str, int] = {}
+    for s in train.doc_set:
+        for lab in {series_label(k) for k in s if k != CATCH_ALL}:
+            counts[lab] = counts.get(lab, 0) + 1
+    sc = pd.Series(counts, name="train_cases").sort_values(ascending=False).to_frame()
+    sc["merged_to_other"] = sc.train_cases < MIN_SERIES_CASES
+    lines += [f"## Series labels, train years {TRAIN_YEARS[0]}-{TRAIN_YEARS[1]}", "",
+              f"Series under {MIN_SERIES_CASES} training cases merge into 'other'.", "",
+              sc.to_markdown(), ""]
+
+    both = labeled[labeled.sum_set.map(bool)]
+    if len(both):
+        jac = [len(a & b) / len(a | b) for a, b in zip(both.doc_set, both.sum_set)]
+        exact = sum(a == b for a, b in zip(both.doc_set, both.sum_set)) / len(both)
+        lines += ["## Summary citations vs. document labels", "",
+                  f"{len(both)} cases have both. Identical sets: {exact:.1%}. Mean Jaccard: {sum(jac) / len(jac):.3f}.",
+                  ""]
+    text = "\n".join(lines)
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    Path(out).write_text(text, encoding="utf-8")
+    print(text)
+    return text
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("sample")
+    s.add_argument("--db", default="data/finra.duckdb")
+    s.add_argument("--out", default="data/label_handcheck.csv")
+    c = sub.add_parser("score")
+    c.add_argument("--csv", default="data/label_handcheck.csv")
+    p = sub.add_parser("profile")
+    p.add_argument("--db", default="data/finra.duckdb")
+    p.add_argument("--out", default="reports/label_profile.md")
+    a = ap.parse_args()
+    if a.cmd == "sample":
+        sample(a.db, a.out)
+    elif a.cmd == "score":
+        score(a.csv)
+    else:
+        profile(a.db, a.out)
+
+
+if __name__ == "__main__":
+    main()

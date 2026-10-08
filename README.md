@@ -27,3 +27,11 @@ uv run python -m finra_nlp.dao labels
 ```
 
 Data and the HTTP cache go in `data/`, which git ignores.
+
+## Label checks
+
+```powershell
+uv run python -m finra_nlp.labels sample    # 100 cases to data/label_handcheck.csv; correct true_rules, set checked to Y
+uv run python -m finra_nlp.labels score     # precision and recall against the 0.98 gate
+uv run python -m finra_nlp.labels profile   # reports/label_profile.md
+```
