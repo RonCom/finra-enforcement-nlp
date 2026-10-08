@@ -26,7 +26,18 @@ from finra_nlp.citations import extract_citations, mask
 from finra_nlp.http import PoliteClient
 
 INDEX_URL = "https://www.finra.org/rules-guidance/oversight-enforcement/disciplinary-actions"
-LINK_RE = re.compile(r"disciplinary[-_ %20]*actions?.*\.pdf$|/rules-guidance/disciplinary-actions/[a-z]+-\d{4}$", re.I)
+LINK_RE = re.compile(
+    r"disciplinary[-_ %20]*actions?.*\.pdf$"
+    r"|/monthly-disciplinary-actions-[a-z]+-\d{4}/?$"
+    r"|/disciplinary-actions/[a-z]+-\d{4}/?$",
+    re.I,
+)
+MONTH_PAGE_PATTERNS = [
+    "https://www.finra.org/rules-guidance/rulebooks/monthly-disciplinary-actions-{month}-{year}",
+    "https://www.finra.org/rules-guidance/disciplinary-actions/{month}-{year}",
+]
+MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august",
+          "september", "october", "november", "december"]
 
 CASE_END_RE = re.compile(r"\(\s*FINRA\s+Case\s*#\s*(\d{8,14})\s*\)")
 PAGE_HEADER_RE = re.compile(
@@ -133,24 +144,73 @@ def report_month_from(url: str, text: str) -> str | None:
     return None
 
 
-def discover(client: PoliteClient, index_url: str = INDEX_URL, max_pages: int = 40) -> list[str]:
-    """Collect monthly report links from the index and its ?page=N pages until no new links appear."""
-    seen: dict[str, None] = {}
+def _links(html: bytes, page_url: str) -> list[str]:
+    soup = BeautifulSoup(html, "lxml")
+    out = []
+    for a in soup.find_all("a", href=True):
+        href = urljoin(page_url, a["href"])
+        if LINK_RE.search(href.split("?")[0]):
+            out.append(href.split("#")[0])
+    return list(dict.fromkeys(out))
+
+
+def _pdf_on_page(html: bytes, page_url: str) -> str | None:
+    """A month's HTML page usually links its PDF; return it if present."""
+    soup = BeautifulSoup(html, "lxml")
+    for a in soup.find_all("a", href=True):
+        href = urljoin(page_url, a["href"])
+        if href.lower().endswith(".pdf") and re.search(r"disciplin", href + a.get_text(), re.I):
+            return href
+    return None
+
+
+def _month_range(start: str, end: str) -> list[tuple[int, int]]:
+    y, m = map(int, start.split("-"))
+    ey, em = map(int, end.split("-"))
+    out = []
+    while (y, m) <= (ey, em):
+        out.append((y, m))
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    return out
+
+
+def discover(client: PoliteClient, index_url: str = INDEX_URL, start: str = "2016-01",
+             end: str | None = None, max_pages: int = 40) -> dict[str, str]:
+    """One report URL per month (YYYY-MM -> URL), preferring PDFs.
+
+    Sources: links on the index page and its ?page=N pages, plus month pages built from the
+    two URL patterns FINRA has used. Each month page is opened to find its PDF.
+    """
+    end = end or date.today().strftime("%Y-%m")
+    candidates: list[str] = []
     for page in range(max_pages):
         url = index_url if page == 0 else f"{index_url}?page={page}"
         status, body = client.get(url)
         if status != 200:
             break
-        soup = BeautifulSoup(body, "lxml")
-        new = 0
-        for a in soup.find_all("a", href=True):
-            href = urljoin(url, a["href"])
-            if LINK_RE.search(href) and href not in seen:
-                seen[href] = None
-                new += 1
-        if new == 0 and page > 0:
+        found = [u for u in _links(body, url) if u not in candidates]
+        if not found and page > 0:
             break
-    return list(seen)
+        candidates += found
+    for y, m in _month_range(start, end):
+        for pat in MONTH_PAGE_PATTERNS:
+            candidates.append(pat.format(month=MONTHS[m - 1], year=y))
+
+    by_month: dict[str, str] = {}
+    for url in dict.fromkeys(candidates):
+        month = report_month_from(url, "")
+        if month is None or not (start <= month <= end):
+            continue
+        if month in by_month and by_month[month].lower().endswith(".pdf"):
+            continue
+        if url.lower().endswith(".pdf"):
+            by_month[month] = url
+            continue
+        status, body = client.get(url)
+        if status != 200:
+            continue
+        by_month[month] = _pdf_on_page(body, url) or url
+    return dict(sorted(by_month.items()))
 
 
 def parse_all(client: PoliteClient, urls: list[str]) -> list[Case]:
@@ -183,16 +243,23 @@ def main() -> None:
     d = sub.add_parser("discover")
     d.add_argument("--index", default=INDEX_URL)
     d.add_argument("--out", default="data/monthly_urls.txt")
+    d.add_argument("--start", default="2016-01")
+    d.add_argument("--end", default=None)
     p = sub.add_parser("parse")
     p.add_argument("--urls", default="data/monthly_urls.txt")
     p.add_argument("--db", default="data/finra.duckdb")
     a = ap.parse_args()
     client = PoliteClient(cache_dir="data/cache/finra")
     if a.cmd == "discover":
-        urls = discover(client, a.index)
+        found = discover(client, a.index, a.start, a.end)
         with open(a.out, "w") as f:
-            f.write("\n".join(urls))
-        print(f"{len(urls)} report links written to {a.out}; check the count and months before parsing")
+            f.write("\n".join(found.values()))
+        expected = [f"{y}-{m:02d}" for y, m in _month_range(a.start, a.end or date.today().strftime("%Y-%m"))]
+        missing = [mo for mo in expected if mo not in found]
+        n_pdf = sum(u.lower().endswith(".pdf") for u in found.values())
+        print(f"{len(found)} of {len(expected)} months found ({n_pdf} PDF, {len(found) - n_pdf} HTML) -> {a.out}")
+        if missing:
+            print("missing:", ", ".join(missing))
     else:
         urls = [u.strip() for u in open(a.urls) if u.strip() and not u.startswith("#")]
         cases = parse_all(client, urls)

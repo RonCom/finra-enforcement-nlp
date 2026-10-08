@@ -70,3 +70,28 @@ def test_wrapped_line_starting_with_firm_is_not_a_heading():
     a = segment(text)[0]
     assert a.section == "Firms Fined"
     assert "Firm personnel failed" in a.text
+
+
+class FakeClient:
+    """Index lists two recent PDFs; older months exist only as HTML pages under one of two patterns."""
+    def get(self, url, use_cache=True):
+        if url.startswith("https://www.finra.org/rules-guidance/oversight-enforcement/disciplinary-actions"):
+            if "?page=" in url:
+                return 200, b"<html></html>"
+            return 200, b"""<a href="/sites/default/files/2026-07/disciplinary-actions-july-2026.pdf">Jul</a>
+                <a href="/sites/default/files/2026-08/disciplinary-actions-august-2026.pdf">Aug</a>
+                <a href="/about">About</a>"""
+        if url.endswith("monthly-disciplinary-actions-june-2026"):
+            return 200, b'<a href="/sites/default/files/2026-06/Disciplinary_Actions_June_2026.pdf">PDF</a>'
+        if url.endswith("disciplinary-actions/may-2026"):
+            return 200, b"<main>Monthly Disciplinary Actions May 2026 text only</main>"
+        return 404, b""
+
+
+def test_discover_one_url_per_month():
+    from finra_nlp.monthly import discover
+    found = discover(FakeClient(), start="2026-04", end="2026-08")
+    assert list(found) == ["2026-05", "2026-06", "2026-07", "2026-08"]
+    assert found["2026-06"].endswith("Disciplinary_Actions_June_2026.pdf")
+    assert found["2026-05"].endswith("disciplinary-actions/may-2026")
+    assert found["2026-07"] == "https://www.finra.org/sites/default/files/2026-07/disciplinary-actions-july-2026.pdf"

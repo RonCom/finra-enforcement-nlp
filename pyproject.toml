@@ -11,6 +11,7 @@ dependencies = [
     "pandas>=2.2",
     "pydantic>=2.7",
     "pymupdf>=1.24",
+    "tabulate>=0.10.0",
 ]
 
 [dependency-groups]
