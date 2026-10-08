@@ -18,3 +18,16 @@ def test_document_links_prefers_case_number():
       <a href="/fda_documents/2020068991101_tastytrade_AWC.pdf">AWC</a></body></html>"""
     links = document_links(html, "https://www.finra.org/x?search=2020068991101", "2020068991101")
     assert links == ["https://www.finra.org/fda_documents/2020068991101_tastytrade_AWC.pdf"]
+
+
+def test_waiver_boilerplate_ignored():
+    text = AWC + """
+II. WAIVER OF PROCEDURAL RIGHTS
+Respondent further specifically and voluntarily waives any right to claim that a person violated
+the ex parte prohibitions of FINRA Rule 9143 or the separation of functions prohibitions of FINRA Rule 9144."""
+    assert labels_from_document(text) == ["FINRA:4530", "FINRA:2010", "FINRA:3110"]
+
+
+def test_waive_sentence_skipped_without_heading():
+    text = AWC + " Respondent waives any claim that staff violated FINRA Rule 9144."
+    assert "FINRA:9144" not in labels_from_document(text)

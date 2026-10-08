@@ -45,11 +45,24 @@ def document_links(html: bytes, page_url: str, case_no: str) -> list[str]:
     return list(dict.fromkeys(links))
 
 
+WAIVER_SECTION_RE = re.compile(r"WAIVER\s+OF\s+PROCEDURAL\s+RIGHTS", re.IGNORECASE)
+WAIVE_RE = re.compile(r"\bwaive", re.IGNORECASE)
+
+
 def labels_from_document(text: str) -> list[str]:
-    """Citation keys from sentences that state violations, in order of first appearance."""
+    """Citation keys from sentences that state violations, in order of first appearance.
+
+    AWCs end with a procedural-rights waiver that mentions Rules 9143 and 9144 next to
+    the word "violated"; text from that heading on is dropped, as is any sentence that waives.
+    """
     text = re.sub(r"\s+", " ", text)
+    cut = WAIVER_SECTION_RE.search(text)
+    if cut:
+        text = text[: cut.start()]
     keys: dict[str, None] = {}
     for sent in VIOLATION_RE.finditer(text):
+        if WAIVE_RE.search(sent.group(0)):
+            continue
         for c in extract_citations(sent.group(0)):
             keys[c.key] = None
     return list(keys)
