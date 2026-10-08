@@ -1,0 +1,204 @@
+"""Parse FINRA's monthly "Disciplinary and Other FINRA Actions" reports into one row per case.
+
+Reports exist as PDFs (/sites/default/files/YYYY-MM/...pdf) and, for older months, HTML pages
+(/rules-guidance/disciplinary-actions/<month>-<year>). Each case write-up ends with
+"(FINRA Case #<number>)", which is the split point.
+
+Usage:
+    uv run python -m finra_nlp.monthly discover --out data/monthly_urls.txt
+    uv run python -m finra_nlp.monthly parse --urls data/monthly_urls.txt --db data/finra.duckdb
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+from dataclasses import asdict, dataclass
+from datetime import date, datetime
+from urllib.parse import urljoin
+
+import duckdb
+import pandas as pd
+import pymupdf
+from bs4 import BeautifulSoup
+
+from finra_nlp.citations import extract_citations, mask
+from finra_nlp.http import PoliteClient
+
+INDEX_URL = "https://www.finra.org/rules-guidance/oversight-enforcement/disciplinary-actions"
+LINK_RE = re.compile(r"disciplinary[-_ %20]*actions?.*\.pdf$|/rules-guidance/disciplinary-actions/[a-z]+-\d{4}$", re.I)
+
+CASE_END_RE = re.compile(r"\(\s*FINRA\s+Case\s*#\s*(\d{8,14})\s*\)")
+PAGE_HEADER_RE = re.compile(
+    r"^\s*(?:\d+\s+)?Disciplinary\s+(?:and|&)\s+Other\s+FINRA\s+Actions(?:\s*\|\s*[A-Z][a-z]+\s+\d{4})?\s*\d*\s*$",
+    re.M,
+)
+SECTION_RE = re.compile(
+    r"^(?:Firms?|Individuals?|Firms?\s+and\s+Individuals?|Complaints?\s+Filed|Decisions?\s+Issued)\b[^.\n]{0,200}$"
+)
+CRD_RE = re.compile(r"^(?P<name>.+?)\s*\(CRD\s*#")
+ACTION_DATE_RE = re.compile(
+    r"\b((?:January|February|March|April|May|June|July|August|September|October|November|December)"
+    r"\s+\d{1,2},\s+\d{4})\s*[–—-]"
+)
+REPORT_MONTH_RE = re.compile(
+    r"(January|February|March|April|May|June|July|August|September|October|November|December)[\s_-]+(\d{4})", re.I
+)
+
+
+@dataclass
+class Case:
+    case_no: str
+    report_url: str
+    report_month: str | None
+    section: str | None
+    respondent: str | None
+    action_date: date | None
+    text: str
+    masked_text: str
+    summary_rules: str  # "|"-joined citation keys found in the summary itself (may be empty)
+
+
+def clean(text: str) -> str:
+    text = PAGE_HEADER_RE.sub("", text)
+    text = re.sub(r"(\w)-\n(\w)", r"\1\2", text)  # rejoin words hyphenated across lines
+    lines = [ln.strip() for ln in text.splitlines()]
+    return "\n".join(ln for ln in lines if ln and not ln.isdigit())
+
+
+def pdf_text(data: bytes) -> str:
+    with pymupdf.open(stream=data, filetype="pdf") as doc:
+        return "\n".join(page.get_text() for page in doc)
+
+
+def html_text(data: bytes) -> str:
+    soup = BeautifulSoup(data, "lxml")
+    for tag in soup(["script", "style", "nav", "header", "footer"]):
+        tag.decompose()
+    return (soup.find("main") or soup.body or soup).get_text("\n", strip=True)
+
+
+def _parse_date(s: str) -> date | None:
+    try:
+        return datetime.strptime(re.sub(r"\s+", " ", s), "%B %d, %Y").date()
+    except ValueError:
+        return None
+
+
+def segment(text: str, report_url: str = "", report_month: str | None = None) -> list[Case]:
+    text = clean(text)
+    cases, prev_end, section = [], 0, None
+    for m in CASE_END_RE.finditer(text):
+        block = text[prev_end:m.start()]
+        prev_end = m.end()
+        lines = block.splitlines()
+        # a section heading can sit between cases; keep the last one seen
+        body_start = 0
+        for i, ln in enumerate(lines):
+            # a heading is followed within a few lines by a respondent line; this keeps
+            # wrapped body lines that start with "Firm..." from being read as headings
+            if SECTION_RE.match(ln) and "(CRD" not in ln and len(ln) <= 160 and any(
+                "(CRD" in nxt for nxt in lines[i + 1: i + 6]
+            ):
+                section, body_start = ln.strip(), i + 1
+        lines = lines[body_start:]
+        respondent = None
+        for ln in lines[:4]:
+            cm = CRD_RE.match(ln)
+            if cm:
+                respondent = cm.group("name").strip()
+                break
+        body = " ".join(lines).strip()
+        body = re.sub(r"\s+", " ", body)
+        dm = ACTION_DATE_RE.search(body)
+        cases.append(Case(
+            case_no=m.group(1),
+            report_url=report_url,
+            report_month=report_month,
+            section=section,
+            respondent=respondent,
+            action_date=_parse_date(dm.group(1)) if dm else None,
+            text=body,
+            masked_text=mask(body),
+            summary_rules="|".join(dict.fromkeys(c.key for c in extract_citations(body))),
+        ))
+    return cases
+
+
+def report_month_from(url: str, text: str) -> str | None:
+    for src in (url, text[:400]):
+        m = REPORT_MONTH_RE.search(src.replace("%20", " "))
+        if m:
+            return datetime.strptime(f"{m.group(1).title()} {m.group(2)}", "%B %Y").strftime("%Y-%m")
+    return None
+
+
+def discover(client: PoliteClient, index_url: str = INDEX_URL, max_pages: int = 40) -> list[str]:
+    """Collect monthly report links from the index and its ?page=N pages until no new links appear."""
+    seen: dict[str, None] = {}
+    for page in range(max_pages):
+        url = index_url if page == 0 else f"{index_url}?page={page}"
+        status, body = client.get(url)
+        if status != 200:
+            break
+        soup = BeautifulSoup(body, "lxml")
+        new = 0
+        for a in soup.find_all("a", href=True):
+            href = urljoin(url, a["href"])
+            if LINK_RE.search(href) and href not in seen:
+                seen[href] = None
+                new += 1
+        if new == 0 and page > 0:
+            break
+    return list(seen)
+
+
+def parse_all(client: PoliteClient, urls: list[str]) -> list[Case]:
+    out = []
+    for url in urls:
+        status, body = client.get(url)
+        if status != 200:
+            print(f"  skip {status}: {url}")
+            continue
+        text = pdf_text(body) if url.lower().endswith(".pdf") or body[:4] == b"%PDF" else html_text(body)
+        month = report_month_from(url, text)
+        cases = segment(text, url, month)
+        print(f"  {month or '?'}: {len(cases)} cases  {url}")
+        out.extend(cases)
+    return out
+
+
+def save(cases: list[Case], db: str) -> None:
+    df = pd.DataFrame([asdict(c) for c in cases]).drop_duplicates("case_no", keep="last")
+    con = duckdb.connect(db)
+    con.execute("CREATE SCHEMA IF NOT EXISTS raw")
+    con.register("df", df)
+    con.execute("CREATE OR REPLACE TABLE raw.monthly_cases AS SELECT * FROM df")
+    con.close()
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    d = sub.add_parser("discover")
+    d.add_argument("--index", default=INDEX_URL)
+    d.add_argument("--out", default="data/monthly_urls.txt")
+    p = sub.add_parser("parse")
+    p.add_argument("--urls", default="data/monthly_urls.txt")
+    p.add_argument("--db", default="data/finra.duckdb")
+    a = ap.parse_args()
+    client = PoliteClient(cache_dir="data/cache/finra")
+    if a.cmd == "discover":
+        urls = discover(client, a.index)
+        with open(a.out, "w") as f:
+            f.write("\n".join(urls))
+        print(f"{len(urls)} report links written to {a.out}; check the count and months before parsing")
+    else:
+        urls = [u.strip() for u in open(a.urls) if u.strip() and not u.startswith("#")]
+        cases = parse_all(client, urls)
+        save(cases, a.db)
+        print(f"Saved {len(cases)} cases to {a.db}")
+
+
+if __name__ == "__main__":
+    main()
