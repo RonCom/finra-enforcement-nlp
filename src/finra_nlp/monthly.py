@@ -36,6 +36,12 @@ MONTH_PAGE_PATTERNS = [
     "https://www.finra.org/rules-guidance/rulebooks/monthly-disciplinary-actions-{month}-{year}",
     "https://www.finra.org/rules-guidance/disciplinary-actions/{month}-{year}",
 ]
+PDF_NAME_PATTERNS = [  # names seen on finra.org for monthly reports
+    "Disciplinary_Actions_{Month}_{year}.pdf",
+    "Disciplinary_Actions_{Month}_{year}_0.pdf",
+    "Disciplinary%20Actions_{Month}_{year}.pdf",
+    "disciplinary-actions-{month}-{year}.pdf",
+]
 MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august",
           "september", "october", "november", "december"]
 
@@ -197,6 +203,7 @@ def discover(client: PoliteClient, index_url: str = INDEX_URL, start: str = "201
             candidates.append(pat.format(month=MONTHS[m - 1], year=y))
 
     by_month: dict[str, str] = {}
+    statuses: dict[int, int] = {}
     for url in dict.fromkeys(candidates):
         month = report_month_from(url, "")
         if month is None or not (start <= month <= end):
@@ -207,9 +214,31 @@ def discover(client: PoliteClient, index_url: str = INDEX_URL, start: str = "201
             by_month[month] = url
             continue
         status, body = client.get(url)
+        statuses[status] = statuses.get(status, 0) + 1
         if status != 200:
             continue
         by_month[month] = _pdf_on_page(body, url) or url
+
+    # months still missing: guess the PDF under the report month's and the prior month's upload folder
+    for y, m in _month_range(start, end):
+        month = f"{y}-{m:02d}"
+        if month in by_month:
+            continue
+        py, pm = (y - 1, 12) if m == 1 else (y, m - 1)
+        for folder in (f"{y}-{m:02d}", f"{py}-{pm:02d}"):
+            for pat in PDF_NAME_PATTERNS:
+                name = pat.format(Month=MONTHS[m - 1].title(), month=MONTHS[m - 1], year=y)
+                url = f"https://www.finra.org/sites/default/files/{folder}/{name}"
+                status, body = client.get(url)
+                statuses[status] = statuses.get(status, 0) + 1
+                if status == 200 and body[:4] == b"%PDF":
+                    by_month[month] = url
+                    break
+            if month in by_month:
+                break
+    other = {k: v for k, v in statuses.items() if k not in (200, 404)}
+    if other:
+        print(f"responses other than 200/404 (possible blocking): {other}")
     return dict(sorted(by_month.items()))
 
 

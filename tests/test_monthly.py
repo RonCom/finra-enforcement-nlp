@@ -95,3 +95,18 @@ def test_discover_one_url_per_month():
     assert found["2026-06"].endswith("Disciplinary_Actions_June_2026.pdf")
     assert found["2026-05"].endswith("disciplinary-actions/may-2026")
     assert found["2026-07"] == "https://www.finra.org/sites/default/files/2026-07/disciplinary-actions-july-2026.pdf"
+
+
+def test_discover_guesses_pdf_names():
+    from finra_nlp.monthly import discover
+
+    class C(FakeClient):
+        def get(self, url, use_cache=True):
+            if url == "https://www.finra.org/sites/default/files/2023-04/Disciplinary_Actions_April_2023.pdf":
+                return 200, b"%PDF-1.7 ..."
+            if url.endswith("2023-04/Disciplinary_Actions_April_2023_0.pdf"):
+                return 200, b"<html>not a pdf</html>"
+            return super().get(url, use_cache)
+
+    found = discover(C(), start="2023-04", end="2023-04")
+    assert found == {"2023-04": "https://www.finra.org/sites/default/files/2023-04/Disciplinary_Actions_April_2023.pdf"}
