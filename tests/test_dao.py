@@ -38,3 +38,60 @@ def test_document_links_ignores_other_cases():
     html = b"""<a href="/sites/default/files/fda_documents/2021069373001%20David%20Wong%20OHO%20Decision.pdf">2021069373001</a>
       <a href="/rules-guidance/oversight-enforcement/finra-disciplinary-actions?search=2021069373001">Related</a>"""
     assert document_links(html, "https://www.finra.org/x?search=2009019837302", "2009019837302") == []
+
+
+LISTING = b"""<table><tr><th>Case ID</th></tr>
+<tr><td class="views-field views-field-field-fda-attachment-file-media">
+  <a href="/sites/default/files/fda_documents/2022073772701%20Keith%20C.%20Baron%20CRD%203231494%20OHO%20Decision.pdf">202207377270</a></td>
+  <td class="views-field views-field-views-conditional-field">summary</td>
+  <td class="views-field views-field-field-fda-document-type-tax">OHO Decisions</td>
+  <td class="views-field views-field-views-conditional-field-3">Keith Baron</td>
+  <td class="views-field views-field-field-core-official-dt is-active">02/11/2025</td></tr>
+<tr><td class="views-field views-field-field-fda-attachment-file-media">
+  <a href="/sites/default/files/fda_documents/Acme%20AWC.pdf">2016049565901</a></td>
+  <td class="views-field views-field-field-fda-document-type-tax">AWC</td>
+  <td class="views-field views-field-field-core-official-dt is-active">03/01/2016</td></tr></table>"""
+
+
+def test_parse_listing_takes_case_number_from_file_name():
+    from datetime import date
+
+    from finra_nlp.dao import parse_listing
+    rows = parse_listing(LISTING, "https://www.finra.org/x")
+    # the link text has a typo (12 digits); the file name has the right number
+    assert rows[0]["case_no"] == "2022073772701" and rows[0]["doc_type"] == "OHO Decisions"
+    assert rows[0]["action_date"] == date(2025, 2, 11) and rows[0]["respondent"] == "Keith Baron"
+    assert rows[1]["case_no"] == "2016049565901"  # no number in the file name: the link text
+
+
+def test_labels_use_the_index(tmp_path, monkeypatch):
+    import duckdb
+    import pandas as pd
+
+    from finra_nlp import dao
+    db = str(tmp_path / "f.duckdb")
+    con = duckdb.connect(db)
+    con.execute("CREATE SCHEMA raw")
+    con.execute("CREATE TABLE raw.monthly_cases AS SELECT * FROM (VALUES ('111'), ('222')) t(case_no)")
+    con.register("ix", pd.DataFrame({"case_no": ["111"], "doc_url": ["u1"], "doc_type": ["AWC"],
+                                     "respondent": ["x"], "action_date": [pd.Timestamp("2020-01-01").date()]}))
+    con.execute("CREATE TABLE raw.dao_index AS SELECT * FROM ix")
+    con.close()
+
+    class C:
+        min_interval, throttled, urls = 1.0, 0, []
+
+        def cached(self, url):
+            return False
+
+        def get(self, url, use_cache=True):
+            self.urls.append(url)
+            return 200, b"%PDF"
+
+    monkeypatch.setattr(dao, "pdf_text", lambda b: AWC)
+    c = C()
+    dao.build_labels(c, db, None, index_only=True)
+    assert c.urls == ["u1"]  # no search page requested
+    con = duckdb.connect(db)
+    got = dict(con.execute("SELECT case_no, doc_rules FROM raw.case_document_labels").fetchall())
+    assert got == {"111": "FINRA:4530|FINRA:2010|FINRA:3110", "222": ""}
