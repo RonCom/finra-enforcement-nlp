@@ -140,8 +140,10 @@ def main() -> None:
     def log(msg):
         print(f"  search: {msg}", flush=True)
 
+    # the search page answers 429 for minutes once tripped; speeding back up after 25 successes tripped it
+    # again within a minute, so the search pace only recovers after 300 successes in a row
     client = PoliteClient(cache_dir="data/cache/finra", max_per_second=1.0, max_retries=6,
-                          retry_wait=30.0, max_interval=4.0, log=log)
+                          retry_wait=30.0, max_interval=4.0, recover_after=300, log=log)
     pdf_client = PoliteClient(cache_dir="data/cache/finra", max_per_second=2.0, max_retries=6, retry_wait=30.0,
                               max_interval=4.0, log=lambda m: print(f"  document: {m}", flush=True))
     if a.cmd == "probe":
