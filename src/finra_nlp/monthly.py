@@ -37,6 +37,7 @@ MONTH_PAGE_PATTERNS = [
     "https://www.finra.org/rules-guidance/disciplinary-actions/{month}-{year}",
 ]
 PDF_NAME_PATTERNS = [  # names seen on finra.org for monthly reports
+    "{Month}_{year}_Disciplinary_Actions.pdf",
     "Disciplinary_Actions_{Month}_{year}.pdf",
     "Disciplinary_Actions_{Month}_{year}_0.pdf",
     "Disciplinary%20Actions_{Month}_{year}.pdf",
@@ -61,6 +62,14 @@ ACTION_DATE_RE = re.compile(
 REPORT_MONTH_RE = re.compile(
     r"(January|February|March|April|May|June|July|August|September|October|November|December)[\s_-]+(\d{4})", re.I
 )
+# file names like Oct_2024_..., 11_Nov_..., 12_2024_December_..., August_Disciplinary Actions_2022
+NAME_MONTH_RE = re.compile(
+    r"(?<![a-z])(january|february|march|april|may|june|july|august|september|october|november|december"
+    r"|jan|feb|mar|apr|jun|jul|aug|sept|sep|oct|nov|dec)(?![a-z])", re.I)
+NAME_YEAR_RE = re.compile(r"(?<!\d)(20\d\d)(?!\d)")
+FOLDER_RE = re.compile(r"/files/(\d{4})-(\d{2})/")
+# the Quarterly Disciplinary Review summarizes actions without the case write-ups
+SKIP_RE = re.compile(r"quarterly", re.I)
 
 
 @dataclass
@@ -143,10 +152,21 @@ def segment(text: str, report_url: str = "", report_month: str | None = None) ->
 
 
 def report_month_from(url: str, text: str) -> str | None:
+    """The report's month from its URL, then its first lines, then the upload folder (YYYY-MM)."""
+    url = url.replace("%20", " ")
     for src in (url, text[:400]):
-        m = REPORT_MONTH_RE.search(src.replace("%20", " "))
+        m = REPORT_MONTH_RE.search(src)
         if m:
             return datetime.strptime(f"{m.group(1).title()} {m.group(2)}", "%B %Y").strftime("%Y-%m")
+    name = url.rsplit("/", 1)[-1]
+    mon, yr = NAME_MONTH_RE.search(name), NAME_YEAR_RE.search(name)
+    folder = FOLDER_RE.search(url)
+    if mon and (yr or folder):
+        month = [m[:3] for m in MONTHS].index(mon.group(1).lower()[:3]) + 1
+        if yr:
+            return f"{yr.group(1)}-{month:02d}"
+        fy, fm = int(folder.group(1)), int(folder.group(2))
+        return f"{fy - (month > fm)}-{month:02d}"  # a December report uploaded in January
     return None
 
 
@@ -155,7 +175,7 @@ def _links(html: bytes, page_url: str) -> list[str]:
     out = []
     for a in soup.find_all("a", href=True):
         href = urljoin(page_url, a["href"])
-        if LINK_RE.search(href.split("?")[0]):
+        if LINK_RE.search(href.split("?")[0]) and not SKIP_RE.search(href):
             out.append(href.split("#")[0])
     return list(dict.fromkeys(out))
 
@@ -165,7 +185,8 @@ def _pdf_on_page(html: bytes, page_url: str) -> str | None:
     soup = BeautifulSoup(html, "lxml")
     for a in soup.find_all("a", href=True):
         href = urljoin(page_url, a["href"])
-        if href.lower().endswith(".pdf") and re.search(r"disciplin", href + a.get_text(), re.I):
+        if (href.lower().endswith(".pdf") and re.search(r"disciplin", href + a.get_text(), re.I)
+                and not SKIP_RE.search(href)):
             return href
     return None
 
@@ -219,22 +240,23 @@ def discover(client: PoliteClient, index_url: str = INDEX_URL, start: str = "201
             continue
         by_month[month] = _pdf_on_page(body, url) or url
 
-    # months still missing: guess the PDF under the report month's and the prior month's upload folder
+    # months still missing or found only as an HTML page: guess the PDF under the report month's and
+    # the prior month's upload folders, and the publication_file folders used through 2018
     for y, m in _month_range(start, end):
         month = f"{y}-{m:02d}"
-        if month in by_month:
+        if month in by_month and by_month[month].lower().endswith(".pdf"):
             continue
         py, pm = (y - 1, 12) if m == 1 else (y, m - 1)
-        for folder in (f"{y}-{m:02d}", f"{py}-{pm:02d}"):
+        for folder in (f"{y}-{m:02d}", f"{py}-{pm:02d}", "publication_file", ""):
             for pat in PDF_NAME_PATTERNS:
                 name = pat.format(Month=MONTHS[m - 1].title(), month=MONTHS[m - 1], year=y)
-                url = f"https://www.finra.org/sites/default/files/{folder}/{name}"
+                url = f"https://www.finra.org/sites/default/files/{folder}/{name}".replace("files//", "files/")
                 status, body = client.get(url)
                 statuses[status] = statuses.get(status, 0) + 1
                 if status == 200 and body[:4] == b"%PDF":
                     by_month[month] = url
                     break
-            if month in by_month:
+            if by_month.get(month, "").lower().endswith(".pdf"):
                 break
     other = {k: v for k, v in statuses.items() if k not in (200, 404)}
     if other:
@@ -252,7 +274,7 @@ def parse_all(client: PoliteClient, urls: list[str]) -> list[Case]:
         text = pdf_text(body) if url.lower().endswith(".pdf") or body[:4] == b"%PDF" else html_text(body)
         month = report_month_from(url, text)
         cases = segment(text, url, month)
-        print(f"  {month or '?'}: {len(cases)} cases  {url}")
+        print(f"  {month or '?'}: {len(cases)} cases  {url}{'  <- NO CASES' if not cases else ''}")
         out.extend(cases)
     return out
 
@@ -274,6 +296,9 @@ def main() -> None:
     d.add_argument("--out", default="data/monthly_urls.txt")
     d.add_argument("--start", default="2016-01")
     d.add_argument("--end", default=None)
+    u = sub.add_parser("dump", help="save a downloaded report as a file, to inspect one that yields no cases")
+    u.add_argument("--url", required=True)
+    u.add_argument("--out", default="data/dump")
     p = sub.add_parser("parse")
     p.add_argument("--urls", default="data/monthly_urls.txt")
     p.add_argument("--db", default="data/finra.duckdb")
@@ -289,6 +314,12 @@ def main() -> None:
         print(f"{len(found)} of {len(expected)} months found ({n_pdf} PDF, {len(found) - n_pdf} HTML) -> {a.out}")
         if missing:
             print("missing:", ", ".join(missing))
+    elif a.cmd == "dump":
+        status, body = client.get(a.url)
+        ext = ".pdf" if body[:4] == b"%PDF" else ".html"
+        with open(a.out + ext, "wb") as f:
+            f.write(body)
+        print(f"{status}: {len(body)} bytes -> {a.out}{ext}")
     else:
         urls = [u.strip() for u in open(a.urls) if u.strip() and not u.startswith("#")]
         cases = parse_all(client, urls)

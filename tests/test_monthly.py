@@ -110,3 +110,30 @@ def test_discover_guesses_pdf_names():
 
     found = discover(C(), start="2023-04", end="2023-04")
     assert found == {"2023-04": "https://www.finra.org/sites/default/files/2023-04/Disciplinary_Actions_April_2023.pdf"}
+
+
+def test_report_month_from_short_names():
+    base = "https://www.finra.org/sites/default/files/"
+    assert report_month_from(base + "2022-08/August_Disciplinary%20Actions_2022.pdf", "") == "2022-08"
+    assert report_month_from(base + "2024-10/Oct_2024_Disciplinary_Actions.pdf", "") == "2024-10"
+    assert report_month_from(base + "2024-11/11_Nov_Disciplinary_Actions.pdf", "") == "2024-11"
+    assert report_month_from(base + "2024-12/12_2024_December_Disciplinary%20Actions.pdf", "") == "2024-12"
+    assert report_month_from(base + "2025-01/Dec_Disciplinary_Actions.pdf", "") == "2024-12"
+    assert report_month_from(base + "2025-01/Decisions.pdf", "") is None
+
+
+def test_discover_skips_quarterly_review_and_guesses_monthly_pdf():
+    from finra_nlp.monthly import discover
+
+    quarterly = "https://www.finra.org/sites/default/files/publication_file/quarterly-disciplinary-review-january-2016.pdf"
+    monthly = "https://www.finra.org/sites/default/files/publication_file/January_2016_Disciplinary_Actions.pdf"
+
+    class C(FakeClient):
+        def get(self, url, use_cache=True):
+            if "oversight-enforcement/disciplinary-actions" in url and "page=" not in url:
+                return 200, f'<a href="{quarterly}">Quarterly</a>'.encode()
+            if url == monthly:
+                return 200, b"%PDF-1.7 ..."
+            return 404, b""
+
+    assert discover(C(), start="2016-01", end="2016-01") == {"2016-01": monthly}
