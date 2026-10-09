@@ -38,6 +38,8 @@ MONTH_PAGE_PATTERNS = [
 ]
 PDF_NAME_PATTERNS = [  # names seen on finra.org for monthly reports
     "{Month}_{year}_Disciplinary_Actions.pdf",
+    "{Month}_{year}_Disciplinary_Actions_0.pdf",
+    "{Month}_{year}_Disiplinary_Actions.pdf",  # FINRA's spelling for May-Sep 2017
     "Disciplinary_Actions_{Month}_{year}.pdf",
     "Disciplinary_Actions_{Month}_{year}_0.pdf",
     "Disciplinary%20Actions_{Month}_{year}.pdf",
