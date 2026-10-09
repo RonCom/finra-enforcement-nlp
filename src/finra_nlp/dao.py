@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import time
 from urllib.parse import urljoin
 
 import duckdb
@@ -80,29 +81,40 @@ def probe(client: PoliteClient, case_no: str) -> None:
         print("labels:", labels_from_document(text))
 
 
-def build_labels(client: PoliteClient, db: str, limit: int | None) -> None:
+def build_labels(client: PoliteClient, db: str, limit: int | None, pdf_client: PoliteClient | None = None,
+                 every: int = 10) -> None:
+    """pdf_client fetches the documents; they're static files, so they can go faster than the search
+    page, which is what draws 429s. Prints progress every `every` cases."""
+    pdf_client = pdf_client or client
     con = duckdb.connect(db)
     case_nos = [r[0] for r in con.execute("SELECT case_no FROM raw.monthly_cases ORDER BY case_no").fetchall()]
     if limit:
         case_nos = case_nos[:limit]
-    rows = []
+    cached = sum(client.cached(SEARCH_URL.format(case=c)) for c in case_nos)
+    print(f"{len(case_nos)} cases, {cached} searches already cached (those go fast)", flush=True)
+    rows, start, found = [], time.monotonic(), 0
     for i, case_no in enumerate(case_nos, 1):
         url = SEARCH_URL.format(case=case_no)
         status, html = client.get(url)
         if status != 200:  # retried by the client and not cached; a rerun tries again
-            print(f"  {case_no}: search returned {status}")
+            print(f"  {case_no}: search returned {status}", flush=True)
         links = document_links(html, url, case_no) if status == 200 else []
         keys, doc_url = [], None
         for link in links:
-            s, pdf = client.get(link)
+            s, pdf = pdf_client.get(link)
             if s == 200:
                 keys, doc_url = labels_from_document(pdf_text(pdf)), link
                 if keys:
                     break
+        found += bool(keys)
         rows.append({"case_no": case_no, "doc_url": doc_url, "doc_rules": "|".join(keys), "n_docs": len(links),
                      "search_status": status})
-        if i % 100 == 0:
-            print(f"  {i}/{len(case_nos)}")
+        if i % every == 0 or i == len(case_nos):
+            took = time.monotonic() - start
+            left = (len(case_nos) - i) * took / i
+            print(f"  {i}/{len(case_nos)} cases, {found} labeled | {took / 60:.0f} min so far, about "
+                  f"{left / 3600:.1f} h left at this pace | search 1 per {client.min_interval:.1f} s, "
+                  f"{client.throttled} 429s", flush=True)
     con.register("df", pd.DataFrame(rows))
     con.execute("CREATE OR REPLACE TABLE raw.case_document_labels AS SELECT * FROM df")
     found = sum(1 for r in rows if r["doc_rules"])
@@ -125,12 +137,17 @@ def main() -> None:
     a = ap.parse_args()
     # 2/s and then 1/s drew 429s on the search page; back off up to 1 request per 4 s, and wait
     # 30, 60, 90 ... s between retries
+    def log(msg):
+        print(f"  search: {msg}", flush=True)
+
     client = PoliteClient(cache_dir="data/cache/finra", max_per_second=1.0, max_retries=6,
-                          retry_wait=30.0, max_interval=4.0)
+                          retry_wait=30.0, max_interval=4.0, log=log)
+    pdf_client = PoliteClient(cache_dir="data/cache/finra", max_per_second=2.0, max_retries=6, retry_wait=30.0,
+                              max_interval=4.0, log=lambda m: print(f"  document: {m}", flush=True))
     if a.cmd == "probe":
         probe(client, a.case)
     else:
-        build_labels(client, a.db, a.limit)
+        build_labels(client, a.db, a.limit, pdf_client)
 
 
 if __name__ == "__main__":

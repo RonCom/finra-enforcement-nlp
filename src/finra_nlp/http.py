@@ -29,13 +29,20 @@ class PoliteClient:
         timeout: float = 30.0,
         retry_wait: float = 0.0,
         max_interval: float = 1.0,
+        recover_after: int = 25,
+        log=None,
     ) -> None:
         """retry_wait: seconds to wait before retry n is at least n * retry_wait (a server that answers
         429 for a minute needs more than the default 1, 2, 4, 8, 16 s). Each 429 also doubles the gap
-        between requests, up to max_interval seconds, for the rest of the run."""
+        between requests, up to max_interval seconds; after recover_after successes in a row the gap
+        halves again, back down to the starting rate. log, if given, is called with a message on each 429."""
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.min_interval = 1.0 / max_per_second
+        self.min_interval = self.base_interval = 1.0 / max_per_second
+        self.recover_after = recover_after
+        self.log = log
+        self._ok_streak = 0
+        self.fetched = self.throttled = 0
         self.max_retries = max_retries
         self.retry_wait = retry_wait
         self.max_interval = max(max_interval, self.min_interval)
@@ -50,6 +57,10 @@ class PoliteClient:
     def _cache_path(self, url: str) -> Path:
         digest = hashlib.sha256(url.encode()).hexdigest()
         return self.cache_dir / digest[:2] / digest
+
+    def cached(self, url: str) -> bool:
+        path = self._cache_path(url)
+        return path.exists() or path.with_suffix(".404").exists()
 
     def _wait(self) -> None:
         with self._lock:
@@ -76,12 +87,24 @@ class PoliteClient:
                     raise
                 time.sleep(2**attempt)
                 continue
+            self.fetched += 1
             if resp.status_code == 429:
+                self.throttled += 1
+                self._ok_streak = 0
                 self.min_interval = min(self.min_interval * 2, self.max_interval)
+            elif resp.status_code < 400:
+                self._ok_streak += 1
+                if self._ok_streak >= self.recover_after and self.min_interval > self.base_interval:
+                    self.min_interval = max(self.min_interval / 2, self.base_interval)
+                    self._ok_streak = 0
             if resp.status_code in RETRY_STATUS and attempt < self.max_retries:
                 retry_after = resp.headers.get("Retry-After")
                 wait = float(retry_after) if retry_after and retry_after.isdigit() else 2**attempt
-                time.sleep(max(wait, (attempt + 1) * self.retry_wait))
+                wait = max(wait, (attempt + 1) * self.retry_wait)
+                if self.log:
+                    self.log(f"{resp.status_code}, waiting {wait:.0f} s (retry {attempt + 1}/{self.max_retries}); "
+                             f"now 1 request per {self.min_interval:.1f} s")
+                time.sleep(wait)
                 continue
             break
 
