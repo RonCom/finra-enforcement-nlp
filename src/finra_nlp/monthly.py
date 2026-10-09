@@ -27,7 +27,7 @@ from finra_nlp.http import PoliteClient
 
 INDEX_URL = "https://www.finra.org/rules-guidance/oversight-enforcement/disciplinary-actions"
 LINK_RE = re.compile(
-    r"disciplinary[-_ %20]*actions?.*\.pdf$"
+    r"disc?iplinary[-_ %20]*actions?.*\.pdf$"  # May-Sep 2017 PDFs are spelled "Disiplinary"
     r"|/monthly-disciplinary-actions-[a-z]+-\d{4}/?$"
     r"|/disciplinary-actions/[a-z]+-\d{4}/?$",
     re.I,
@@ -185,7 +185,7 @@ def _pdf_on_page(html: bytes, page_url: str) -> str | None:
     soup = BeautifulSoup(html, "lxml")
     for a in soup.find_all("a", href=True):
         href = urljoin(page_url, a["href"])
-        if (href.lower().endswith(".pdf") and re.search(r"disciplin", href + a.get_text(), re.I)
+        if (href.lower().endswith(".pdf") and re.search(r"disc?iplin", href + a.get_text(), re.I)
                 and not SKIP_RE.search(href)):
             return href
     return None

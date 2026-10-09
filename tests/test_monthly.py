@@ -137,3 +137,13 @@ def test_discover_skips_quarterly_review_and_guesses_monthly_pdf():
             return 404, b""
 
     assert discover(C(), start="2016-01", end="2016-01") == {"2016-01": monthly}
+
+
+def test_pdf_on_page_reads_misspelled_name():
+    from finra_nlp.monthly import _pdf_on_page
+    page = (b'<a href="/rules-guidance/oversight-enforcement/disciplinary-actions">Monthly</a>'
+            b'<a href="/sites/default/files/publication_file/May_2017_Disiplinary_Actions.pdf">May 2017 Disiplinary Actions.pdf</a>')
+    url = "https://www.finra.org/rules-guidance/disciplinary-actions/may-2017"
+    assert _pdf_on_page(page, url) == "https://www.finra.org/sites/default/files/publication_file/May_2017_Disiplinary_Actions.pdf"
+    quarterly = b'<a href="/sites/default/files/publication_file/quarterly-disciplinary-review-october-2016.pdf">Q</a>'
+    assert _pdf_on_page(quarterly, url) is None
