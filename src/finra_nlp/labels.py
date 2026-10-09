@@ -4,19 +4,30 @@ Usage:
     uv run python -m finra_nlp.labels sample            # writes data/label_handcheck.csv
     uv run python -m finra_nlp.labels score             # precision/recall vs. the 0.98 gate
     uv run python -m finra_nlp.labels profile           # writes reports/label_profile.md
+    uv run python -m finra_nlp.labels export            # writes data/label_handcheck_docs.json
 
 Hand-check: open each doc_url, correct true_rules (prefilled with the extracted labels, keys
 joined by "|", e.g. FINRA:3110|FINRA:2010), and set checked to Y.
+
+`export` reads each sampled document from the HTTP cache (fetching it if missing) and writes,
+per case, every sentence before the waiver section that cites a rule or states a violation.
+That file is short enough to read in one pass when a reviewer proposes true_rules.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import re
 from pathlib import Path
 
 import duckdb
 import pandas as pd
+
+from finra_nlp.citations import extract_citations
+from finra_nlp.dao import VIOLATION_RE, WAIVER_SECTION_RE
+from finra_nlp.http import PoliteClient
+from finra_nlp.monthly import pdf_text
 
 GATE = 0.98
 TRAIN_YEARS = (2016, 2022)
@@ -71,6 +82,44 @@ def score(csv: str) -> tuple[float, float]:
     verdict = "PASS" if precision >= GATE and recall >= GATE else "FAIL"
     print(f"{len(df)} cases checked: precision {precision:.3f}, recall {recall:.3f} (gate {GATE}) {verdict}")
     return precision, recall
+
+
+SENTENCE_RE = re.compile(r"[^.]*(?:\.(?=\s|$)|$)")  # periods inside "Rule 2010." are fine; "Sec." splits early
+
+
+def document_sentences(text: str) -> tuple[list[str], int, bool]:
+    """Sentences before the waiver heading that cite a rule or state a violation.
+    Returns (sentences, characters before the waiver, whether a waiver heading was found)."""
+    text = re.sub(r"\s+", " ", text)
+    cut = WAIVER_SECTION_RE.search(text)
+    head = text[: cut.start()] if cut else text
+    out = []
+    for m in SENTENCE_RE.finditer(head):
+        s = m.group(0).strip()
+        if s and (extract_citations(s) or VIOLATION_RE.search(s)):
+            out.append(s)
+    return out, len(head), cut is not None
+
+
+def export(csv: str, out: str, client=None) -> list[dict]:
+    """Write the hand-check sample with each document's citing and violation sentences."""
+    client = client or PoliteClient(cache_dir="data/cache/finra")
+    df = pd.read_csv(csv, dtype=str).fillna("")
+    rows = []
+    for r in df.itertuples(index=False):
+        status, body = client.get(r.doc_url) if r.doc_url else (0, b"")
+        if status != 200 or not body.startswith(b"%PDF"):
+            rows.append({"case_no": r.case_no, "doc_url": r.doc_url, "doc_rules": r.doc_rules,
+                         "error": f"document not read (status {status})", "sentences": []})
+            continue
+        sents, chars, waiver = document_sentences(pdf_text(body))
+        rows.append({"case_no": r.case_no, "doc_url": r.doc_url, "doc_rules": r.doc_rules,
+                     "chars_before_waiver": chars, "waiver_found": waiver, "sentences": sents})
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    Path(out).write_text(json.dumps(rows, indent=1, ensure_ascii=False), encoding="utf-8")
+    bad = sum(1 for x in rows if "error" in x)
+    print(f"Wrote {len(rows)} cases to {out} ({bad} documents not read)")
+    return rows
 
 
 def profile(db: str, out: str) -> str:
@@ -129,11 +178,16 @@ def main() -> None:
     p = sub.add_parser("profile")
     p.add_argument("--db", default="data/finra.duckdb")
     p.add_argument("--out", default="reports/label_profile.md")
+    e = sub.add_parser("export")
+    e.add_argument("--csv", default="data/label_handcheck.csv")
+    e.add_argument("--out", default="data/label_handcheck_docs.json")
     a = ap.parse_args()
     if a.cmd == "sample":
         sample(a.db, a.out)
     elif a.cmd == "score":
         score(a.csv)
+    elif a.cmd == "export":
+        export(a.csv, a.out)
     else:
         profile(a.db, a.out)
 

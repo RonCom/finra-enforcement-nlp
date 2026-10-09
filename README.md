@@ -34,4 +34,24 @@ Data and the HTTP cache go in `data/`, which git ignores.
 uv run python -m finra_nlp.labels sample    # 100 cases to data/label_handcheck.csv; correct true_rules, set checked to Y
 uv run python -m finra_nlp.labels score     # precision and recall against the 0.98 gate
 uv run python -m finra_nlp.labels profile   # reports/label_profile.md
+uv run python -m finra_nlp.labels export    # data/label_handcheck_docs.json: each sampled document's citing and violation sentences
+uv run python -m finra_nlp.masking          # exits 1 if any masked summary still has a numbered rule reference
 ```
+
+## Classifier
+
+```powershell
+uv run python -m finra_nlp.dataset          # model.dataset: series labels, 2010 dropped, splits by action date
+uv run python -m finra_nlp.baseline         # TF-IDF + logistic regression; reports/baseline_validation.md (validation only)
+```
+
+## Rulebook
+
+```powershell
+uv run python -m finra_nlp.rulebook terms   # reports/rulebook_terms.md: terms-of-use passages and robots.txt
+uv run python -m finra_nlp.rulebook terms --accept "what you read and decided"
+uv run python -m finra_nlp.rulebook download --limit 5
+uv run python -m finra_nlp.rulebook download
+```
+
+The 20 out-of-scope questions for H4 are in [docs/out_of_scope_questions.csv](docs/out_of_scope_questions.csv); mark `keep` Y or N after review.
