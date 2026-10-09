@@ -31,3 +31,10 @@ the ex parte prohibitions of FINRA Rule 9143 or the separation of functions proh
 def test_waive_sentence_skipped_without_heading():
     text = AWC + " Respondent waives any claim that staff violated FINRA Rule 9144."
     assert "FINRA:9144" not in labels_from_document(text)
+
+
+def test_document_links_ignores_other_cases():
+    """DAO's search is full-text: a case not in DAO returns other cases' documents."""
+    html = b"""<a href="/sites/default/files/fda_documents/2021069373001%20David%20Wong%20OHO%20Decision.pdf">2021069373001</a>
+      <a href="/rules-guidance/oversight-enforcement/finra-disciplinary-actions?search=2021069373001">Related</a>"""
+    assert document_links(html, "https://www.finra.org/x?search=2009019837302", "2009019837302") == []

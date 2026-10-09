@@ -33,15 +33,14 @@ VIOLATION_RE = re.compile(
 
 
 def document_links(html: bytes, page_url: str, case_no: str) -> list[str]:
+    """PDFs whose file name or link text carries the case number. The search is full-text: a case
+    that isn't in DAO still returns a page of other cases' documents, so nothing else is taken."""
     soup = BeautifulSoup(html, "lxml")
     links = []
     for a in soup.find_all("a", href=True):
         href = urljoin(page_url, a["href"])
         if href.lower().endswith(".pdf") and (case_no in href or case_no in a.get_text()):
             links.append(href)
-    if not links:  # fall back to any PDF on the page; the search should return one case
-        links = [urljoin(page_url, a["href"]) for a in soup.find_all("a", href=True)
-                 if a["href"].lower().endswith(".pdf")]
     return list(dict.fromkeys(links))
 
 
@@ -90,6 +89,8 @@ def build_labels(client: PoliteClient, db: str, limit: int | None) -> None:
     for i, case_no in enumerate(case_nos, 1):
         url = SEARCH_URL.format(case=case_no)
         status, html = client.get(url)
+        if status != 200:  # retried by the client and not cached; a rerun tries again
+            print(f"  {case_no}: search returned {status}")
         links = document_links(html, url, case_no) if status == 200 else []
         keys, doc_url = [], None
         for link in links:
@@ -98,13 +99,18 @@ def build_labels(client: PoliteClient, db: str, limit: int | None) -> None:
                 keys, doc_url = labels_from_document(pdf_text(pdf)), link
                 if keys:
                     break
-        rows.append({"case_no": case_no, "doc_url": doc_url, "doc_rules": "|".join(keys), "n_docs": len(links)})
+        rows.append({"case_no": case_no, "doc_url": doc_url, "doc_rules": "|".join(keys), "n_docs": len(links),
+                     "search_status": status})
         if i % 100 == 0:
             print(f"  {i}/{len(case_nos)}")
     con.register("df", pd.DataFrame(rows))
     con.execute("CREATE OR REPLACE TABLE raw.case_document_labels AS SELECT * FROM df")
     found = sum(1 for r in rows if r["doc_rules"])
-    print(f"Labels for {found}/{len(rows)} cases")
+    no_doc = sum(1 for r in rows if r["search_status"] == 200 and not r["n_docs"])
+    failed = sum(1 for r in rows if r["search_status"] != 200)
+    unlabeled = len(rows) - found - no_doc - failed
+    print(f"Labels for {found}/{len(rows)} cases; {no_doc} not in DAO (no document with the case number), "
+          f"{unlabeled} with a document but no rule found, {failed} searches failed (rerun to retry)")
     con.close()
 
 
@@ -117,7 +123,7 @@ def main() -> None:
     lb.add_argument("--db", default="data/finra.duckdb")
     lb.add_argument("--limit", type=int)
     a = ap.parse_args()
-    client = PoliteClient(cache_dir="data/cache/finra")
+    client = PoliteClient(cache_dir="data/cache/finra", max_per_second=1.0)  # 2/s drew 429s
     if a.cmd == "probe":
         probe(client, a.case)
     else:
