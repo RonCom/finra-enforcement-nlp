@@ -281,13 +281,15 @@ def parse_all(client: PoliteClient, urls: list[str]) -> list[Case]:
     return out
 
 
-def save(cases: list[Case], db: str) -> None:
+def save(cases: list[Case], db: str) -> int:
+    """One row per case number; a case summarized in more than one report keeps the latest report's row."""
     df = pd.DataFrame([asdict(c) for c in cases]).drop_duplicates("case_no", keep="last")
     con = duckdb.connect(db)
     con.execute("CREATE SCHEMA IF NOT EXISTS raw")
     con.register("df", df)
     con.execute("CREATE OR REPLACE TABLE raw.monthly_cases AS SELECT * FROM df")
     con.close()
+    return len(df)
 
 
 def main() -> None:
@@ -325,8 +327,9 @@ def main() -> None:
     else:
         urls = [u.strip() for u in open(a.urls) if u.strip() and not u.startswith("#")]
         cases = parse_all(client, urls)
-        save(cases, a.db)
-        print(f"Saved {len(cases)} cases to {a.db}")
+        n = save(cases, a.db)
+        print(f"Saved {n} cases to {a.db} ({len(cases)} write-ups; {len(cases) - n} repeat a case number "
+              f"from another report, the latest is kept)")
 
 
 if __name__ == "__main__":
