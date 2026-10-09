@@ -27,11 +27,18 @@ class PoliteClient:
         max_per_second: float = 2.0,
         max_retries: int = 5,
         timeout: float = 30.0,
+        retry_wait: float = 0.0,
+        max_interval: float = 1.0,
     ) -> None:
+        """retry_wait: seconds to wait before retry n is at least n * retry_wait (a server that answers
+        429 for a minute needs more than the default 1, 2, 4, 8, 16 s). Each 429 also doubles the gap
+        between requests, up to max_interval seconds, for the rest of the run."""
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.min_interval = 1.0 / max_per_second
         self.max_retries = max_retries
+        self.retry_wait = retry_wait
+        self.max_interval = max(max_interval, self.min_interval)
         self._last = 0.0
         self._lock = threading.Lock()
         self.client = httpx.Client(
@@ -69,9 +76,12 @@ class PoliteClient:
                     raise
                 time.sleep(2**attempt)
                 continue
+            if resp.status_code == 429:
+                self.min_interval = min(self.min_interval * 2, self.max_interval)
             if resp.status_code in RETRY_STATUS and attempt < self.max_retries:
                 retry_after = resp.headers.get("Retry-After")
-                time.sleep(float(retry_after) if retry_after and retry_after.isdigit() else 2**attempt)
+                wait = float(retry_after) if retry_after and retry_after.isdigit() else 2**attempt
+                time.sleep(max(wait, (attempt + 1) * self.retry_wait))
                 continue
             break
 

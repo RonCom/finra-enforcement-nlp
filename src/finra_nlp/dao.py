@@ -123,7 +123,10 @@ def main() -> None:
     lb.add_argument("--db", default="data/finra.duckdb")
     lb.add_argument("--limit", type=int)
     a = ap.parse_args()
-    client = PoliteClient(cache_dir="data/cache/finra", max_per_second=1.0)  # 2/s drew 429s
+    # 2/s and then 1/s drew 429s on the search page; back off up to 1 request per 4 s, and wait
+    # 30, 60, 90 ... s between retries
+    client = PoliteClient(cache_dir="data/cache/finra", max_per_second=1.0, max_retries=6,
+                          retry_wait=30.0, max_interval=4.0)
     if a.cmd == "probe":
         probe(client, a.case)
     else:
