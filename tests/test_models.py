@@ -162,3 +162,43 @@ def test_zeroshot_scores_and_resumes(tmp_path):
     assert per.loc["FINRA:3000", "f1"] == 1.0 and per.loc["FINRA:2000", "f1"] == 1.0
     con = duckdb.connect(db, read_only=True)
     assert con.execute("SELECT count(*) FROM model.zeroshot_validation").fetchone()[0] == 20
+
+
+def _tiny(name, n_labels):
+    """A one-layer BERT and a whitespace tokenizer, so the fine-tune loop runs without downloads."""
+    import torch
+    from transformers import BertConfig, BertForSequenceClassification
+
+    vocab: dict[str, int] = {"[PAD]": 0}
+
+    class Tok:
+        def __call__(self, texts, truncation=True, max_length=None, padding=False, return_tensors=None):
+            ids = [[vocab.setdefault(w, len(vocab) % 199 + 1) for w in t.lower().split()][:max_length or None] or [1]
+                   for t in texts]
+            if not return_tensors:
+                return {"input_ids": ids}
+            width = max(len(x) for x in ids)
+            return {"input_ids": torch.tensor([x + [0] * (width - len(x)) for x in ids]),
+                    "attention_mask": torch.tensor([[1] * len(x) + [0] * (width - len(x)) for x in ids])}
+
+        def save_pretrained(self, path):
+            pass
+
+    torch.manual_seed(0)
+    cfg = BertConfig(vocab_size=200, hidden_size=32, num_hidden_layers=1, num_attention_heads=2,
+                     intermediate_size=64, num_labels=n_labels, problem_type="multi_label_classification")
+    return Tok(), BertForSequenceClassification(cfg)
+
+
+def test_finetune_learns_and_reports(tmp_path):
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+    from finra_nlp import finetune
+    db = _db(tmp_path, _cases())
+    dataset.build(db)
+    per, macro = finetune.run(db, str(tmp_path / "f.md"), epochs=6, batch=8, micro=4, max_len=32, lr=5e-3,
+                              save_dir=str(tmp_path / "m"), loader=_tiny)
+    assert per.loc["FINRA:3000", "f1"] == 1.0 and per.loc["FINRA:2000", "f1"] == 1.0
+    con = duckdb.connect(db, read_only=True)
+    assert con.execute("SELECT count(*) FROM model.finetune_validation").fetchone()[0] == 20
+    assert "By epoch" in (tmp_path / "f.md").read_text()

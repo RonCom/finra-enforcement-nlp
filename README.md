@@ -50,6 +50,12 @@ uv run python -m finra_nlp.dataset          # model.dataset: series labels, 2010
 uv run python -m finra_nlp.baseline         # TF-IDF + logistic regression; reports/baseline_validation.md (validation only)
 uv run python -m finra_nlp.zeroshot --limit 5   # local model through Ollama: check answers and time per case
 uv run python -m finra_nlp.zeroshot         # all validation cases (resumes); reports/zeroshot_validation.md
+
+# fine-tuned transformer: install the CUDA build of torch once, then check memory and speed on a small run
+uv pip install torch --index-url https://download.pytorch.org/whl/cu126
+uv pip install "transformers>=4.48"
+uv run python -m finra_nlp.finetune --epochs 1 --limit-train 200
+uv run python -m finra_nlp.finetune         # reports/finetune_validation.md; best model in data/models/finetune
 ```
 
 ## Rulebook
