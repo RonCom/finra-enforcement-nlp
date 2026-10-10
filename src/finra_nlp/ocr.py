@@ -41,6 +41,10 @@ def ocr_text(data: bytes, dpi: int = 300) -> tuple[str, int]:
     return "\n".join(pages), len(pages)
 
 
+def cache_path(url: str, dpi: int = 300, cache: Path = CACHE) -> Path:
+    return cache / (hashlib.sha256(f"{url}|{dpi}".encode()).hexdigest() + ".txt")
+
+
 def documents(con, client: PoliteClient, cases: list[str]) -> dict[str, list[str]]:
     """Each case's document URLs: the DAO index, then a cached search page, then the one the labels kept."""
     index = con.execute("SELECT case_no, doc_url FROM raw.dao_index ORDER BY action_date DESC").fetchall()
@@ -74,7 +78,7 @@ def build(db: str, client: PoliteClient, limit: int | None = None, dpi: int = 30
     for i, case_no in enumerate(cases, 1):
         keys, used, pages = [], None, 0
         for url in docs[case_no]:
-            path = cache / (hashlib.sha256(f"{url}|{dpi}".encode()).hexdigest() + ".txt")
+            path = cache_path(url, dpi, cache)
             if path.exists():
                 text = path.read_text(encoding="utf-8")
             else:
