@@ -210,3 +210,23 @@ def test_pos_weights():
     y = np.array([[1, 0], [1, 0], [0, 0], [0, 1]] * 25)
     w = pos_weights(y)
     assert w[0] == 1.0 and abs(w[1] - 3 ** 0.5) < 1e-6
+
+
+def test_finetune_ensemble_averages_seeds(tmp_path):
+    pytest.importorskip("torch")
+    from finra_nlp import finetune
+    db = _db(tmp_path, _cases())
+    dataset.build(db)
+    saved = {}
+    for seed in (0, 1):
+        def keep(name, n, seed=seed):
+            tok, model = _tiny(name, n)
+            saved[seed] = (tok, model)
+            return tok, model
+        finetune.run(db, str(tmp_path / f"f{seed}.md"), epochs=6, batch=8, micro=4, max_len=32, lr=5e-3,
+                     seed=seed, save_dir=None, loader=keep)
+    classes = sorted({"FINRA:2000", "FINRA:3000", "other"})
+    per, macro = finetune.ensemble(db, str(tmp_path / "e.md"), dirs=["0", "1"], max_len=32,
+                                   loader=lambda d: (*saved[int(d)], classes))
+    assert per.loc["FINRA:3000", "f1"] == 1.0
+    assert "average" in (tmp_path / "e.md").read_text()

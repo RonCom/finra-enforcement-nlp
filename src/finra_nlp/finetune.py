@@ -15,7 +15,8 @@ Install (once; the CUDA build of torch, into the project's environment):
 
 Usage:
     uv run python -m finra_nlp.finetune --epochs 1 --limit-train 200   # check memory and speed first
-    uv run python -m finra_nlp.finetune
+    uv run python -m finra_nlp.finetune                                # seed 0; --seed 1, --seed 2 for the spread
+    uv run python -m finra_nlp.finetune --ensemble                     # average of the three saved seeds
 """
 
 from __future__ import annotations
@@ -183,6 +184,64 @@ def run(db: str, out: str, model_name: str = DEFAULT_MODEL, epochs: int = 6, bat
     return per, macro
 
 
+ENSEMBLE_DIRS = ["data/models/finetune", "data/models/finetune_seed1", "data/models/finetune_seed2"]
+
+
+def load_saved(path: str):
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+    return (AutoTokenizer.from_pretrained(path), AutoModelForSequenceClassification.from_pretrained(path),
+            json.loads(Path(path, "series.json").read_text(encoding="utf-8")))
+
+
+def ensemble(db: str, out: str, dirs: list[str] = ENSEMBLE_DIRS, max_len: int = 512, batch: int = 16,
+             loader=load_saved) -> tuple[pd.DataFrame, float]:
+    """Average the saved seeds' probabilities on the validation split and score the average."""
+    import torch
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    con = duckdb.connect(db)
+    val = con.execute("SELECT case_no, masked_text, labels FROM model.dataset WHERE split = 'validation' "
+                      "ORDER BY case_no").df()
+    probs, classes, rows = [], None, []
+    for d in dirs:
+        tok, model, cls = loader(d)
+        if classes is not None and cls != classes:
+            raise SystemExit(f"{d} was trained on different series than {dirs[0]}")
+        classes = cls
+        model.to(device)
+        p = predict(model, tok, val.masked_text.fillna("").tolist(), max_len, batch, device)
+        y = np.array([[int(c in _labels(s)) for c in classes] for s in val["labels"]])
+        per_d, macro_d = score(classes, y, p)
+        rows.append({"model": d, "macro_f1": macro_d, "macro_f1_10plus": macro_supported(per_d)[0]})
+        probs.append(p)
+        del model
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+    prob = np.mean(probs, axis=0)
+    y = np.array([[int(c in _labels(s)) for c in classes] for s in val["labels"]])
+    per, macro = score(classes, y, prob)
+    m10, n10 = macro_supported(per)
+    rows.append({"model": "average", "macro_f1": macro, "macro_f1_10plus": m10})
+    table = pd.DataFrame(prob, columns=classes)
+    table.insert(0, "case_no", val.case_no.values)
+    table.insert(1, "labels", val["labels"].values)
+    con.register("ens", table)
+    con.execute("CREATE OR REPLACE TABLE model.finetune_ensemble_validation AS SELECT * FROM ens")
+    con.close()
+    text = "\n".join([
+        f"# Fine-tuned transformer, average of {len(dirs)} seeds, validation split", "",
+        f"Macro-F1: {macro:.3f} (all {len(per)} series)", "",
+        f"Macro-F1, series with {MIN_SUPPORT}+ validation cases: {m10:.3f} ({n10} series)", "",
+        per.round(3).to_markdown(), "", "## Each seed and the average", "",
+        pd.DataFrame(rows).round(4).to_markdown(index=False), "",
+    ])
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    Path(out).write_text(text, encoding="utf-8")
+    print(text)
+    return per, macro
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", default="data/finra.duckdb")
@@ -196,7 +255,12 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--limit-train", type=int, help="train on this many cases only (to check memory and speed)")
     ap.add_argument("--no-weights", action="store_true", help="unweighted loss (the first validation run)")
+    ap.add_argument("--ensemble", action="store_true",
+                    help="score the average of the saved seed 0, 1 and 2 models on validation (no training)")
     a = ap.parse_args()
+    if a.ensemble:
+        ensemble(a.db, "reports/finetune_ensemble_validation.md")
+        return
     out = a.out if a.seed == 0 or a.out != "reports/finetune_validation.md" else f"reports/finetune_validation_seed{a.seed}.md"
     run(a.db, out, a.model, a.epochs, a.batch, a.micro, a.max_len, a.lr, a.seed, a.limit_train,
         save_dir=f"data/models/finetune_seed{a.seed}" if a.seed else "data/models/finetune", weighted=not a.no_weights)
