@@ -56,6 +56,19 @@ uv pip install torch --index-url https://download.pytorch.org/whl/cu126
 uv pip install "transformers>=4.48"
 uv run python -m finra_nlp.finetune --epochs 1 --limit-train 200
 uv run python -m finra_nlp.finetune         # reports/finetune_validation.md; best model in data/models/finetune
+uv run python -m finra_nlp.finetune --seed 1
+uv run python -m finra_nlp.finetune --seed 2
+uv run python -m finra_nlp.finetune --ensemble   # average of the three seeds on validation
+```
+
+## Frozen test run (once)
+
+```powershell
+git tag freeze-1
+git push origin freeze-1
+uv run python -m finra_nlp.testrun zeroshot --workers 2   # zero-shot answers the test cases (resumes)
+ollama stop gemma4:26b
+uv run python -m finra_nlp.testrun score                  # reports/test_results.md, H1 and H2
 ```
 
 ## Rulebook

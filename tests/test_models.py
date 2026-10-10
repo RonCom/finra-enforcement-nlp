@@ -230,3 +230,29 @@ def test_finetune_ensemble_averages_seeds(tmp_path):
                                    loader=lambda d: (*saved[int(d)], classes))
     assert per.loc["FINRA:3000", "f1"] == 1.0
     assert "average" in (tmp_path / "e.md").read_text()
+
+
+def test_frozen_test_run(tmp_path, monkeypatch):
+    from finra_nlp import testrun, zeroshot
+    rows = _cases() + [(f"t{i}", "2025-03-01", "2025-04", "failed to supervise the [RULE] branch office"
+                        if i % 2 else "unsuitable recommendations of leveraged funds",
+                        "FINRA:3110|FINRA:2010" if i % 2 else "FINRA:2111|FINRA:2010") for i in range(12)]
+    db = _db(tmp_path, rows)
+    dataset.build(db)
+    c = _Ollama()
+    for p in ("v1", "v2"):
+        monkeypatch.setattr(zeroshot, "PROMPT_VERSION", p)
+        zeroshot.run(db, str(tmp_path / f"z{p}.md"), client=c)
+    testrun.answer_test(db, client=c, check=lambda: None)
+    con = duckdb.connect(db, read_only=True)
+    test = con.execute("SELECT case_no, masked_text, labels FROM model.dataset WHERE split = 'test' "
+                       "ORDER BY case_no").df()
+    con.close()
+    classes = ["FINRA:2000", "FINRA:3000", "other"]
+    perfect = np.array([[float(k in s.split("|")) for k in classes] for s in test["labels"]])
+    out = tmp_path / "test_results.md"
+    res = testrun.score_test(db, str(out), check=lambda o: "freeze-test at abc",
+                             ensemble=lambda db, split: (classes, test, [perfect], perfect))
+    text = out.read_text()
+    assert "H1" in text and "H2" in text and "freeze-test" in text
+    assert res["Fine-tuned (average of 3 seeds)"]["macro_f1"] >= res["TF-IDF baseline"]["macro_f1"] - 1e-9

@@ -194,38 +194,47 @@ def load_saved(path: str):
             json.loads(Path(path, "series.json").read_text(encoding="utf-8")))
 
 
-def ensemble(db: str, out: str, dirs: list[str] = ENSEMBLE_DIRS, max_len: int = 512, batch: int = 16,
-             loader=load_saved) -> tuple[pd.DataFrame, float]:
-    """Average the saved seeds' probabilities on the validation split and score the average."""
+def ensemble_probs(db: str, split: str, dirs: list[str] = ENSEMBLE_DIRS, max_len: int = 512, batch: int = 16,
+                   loader=load_saved):
+    """Each saved seed's probabilities on a split, and their average: (classes, cases, [per-seed], average)."""
     import torch
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    con = duckdb.connect(db)
-    val = con.execute("SELECT case_no, masked_text, labels FROM model.dataset WHERE split = 'validation' "
-                      "ORDER BY case_no").df()
-    probs, classes, rows = [], None, []
+    con = duckdb.connect(db, read_only=True)
+    cases = con.execute("SELECT case_no, masked_text, labels FROM model.dataset WHERE split = ? ORDER BY case_no",
+                        [split]).df()
+    con.close()
+    probs, classes = [], None
     for d in dirs:
         tok, model, cls = loader(d)
         if classes is not None and cls != classes:
             raise SystemExit(f"{d} was trained on different series than {dirs[0]}")
         classes = cls
         model.to(device)
-        p = predict(model, tok, val.masked_text.fillna("").tolist(), max_len, batch, device)
-        y = np.array([[int(c in _labels(s)) for c in classes] for s in val["labels"]])
-        per_d, macro_d = score(classes, y, p)
-        rows.append({"model": d, "macro_f1": macro_d, "macro_f1_10plus": macro_supported(per_d)[0]})
-        probs.append(p)
+        probs.append(predict(model, tok, cases.masked_text.fillna("").tolist(), max_len, batch, device))
         del model
         if device.type == "cuda":
             torch.cuda.empty_cache()
-    prob = np.mean(probs, axis=0)
+    return classes, cases, probs, np.mean(probs, axis=0)
+
+
+def ensemble(db: str, out: str, dirs: list[str] = ENSEMBLE_DIRS, max_len: int = 512, batch: int = 16,
+             loader=load_saved) -> tuple[pd.DataFrame, float]:
+    """Average the saved seeds' probabilities on the validation split and score the average."""
+    classes, val, each, prob = ensemble_probs(db, "validation", dirs, max_len, batch, loader)
     y = np.array([[int(c in _labels(s)) for c in classes] for s in val["labels"]])
+    rows = []
+    for d, p in zip(dirs, each):
+        per_d, macro_d = score(classes, y, p)
+        rows.append({"model": d, "macro_f1": macro_d, "macro_f1_10plus": macro_supported(per_d)[0]})
     per, macro = score(classes, y, prob)
     m10, n10 = macro_supported(per)
     rows.append({"model": "average", "macro_f1": macro, "macro_f1_10plus": m10})
     table = pd.DataFrame(prob, columns=classes)
     table.insert(0, "case_no", val.case_no.values)
     table.insert(1, "labels", val["labels"].values)
+    con = duckdb.connect(db)
+    con.execute("CREATE SCHEMA IF NOT EXISTS model")
     con.register("ens", table)
     con.execute("CREATE OR REPLACE TABLE model.finetune_ensemble_validation AS SELECT * FROM ens")
     con.close()

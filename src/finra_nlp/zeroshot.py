@@ -178,25 +178,12 @@ def recheck(db: str, n: int, client: httpx.Client, model: str = MODEL) -> None:
               f"{flips} series flipped across 0.5 (of {len(diffs)}); median {np.median(secs):.1f} s per case")
 
 
-def run(db: str, out: str, limit: int | None = None, client: httpx.Client | None = None,
-        model: str = MODEL, workers: int = 1) -> tuple[pd.DataFrame, float] | None:
-    client = client or httpx.Client(timeout=600)
-    con = duckdb.connect(db)
-    data = con.execute("SELECT case_no, split, masked_text, labels FROM model.dataset "
-                       "WHERE split IN ('train', 'validation')").df()
-    classes = sorted({lab for s in data[data.split == "train"]["labels"] for lab in _labels(s)})
-    val = data[data.split == "validation"].sort_values("case_no").reset_index(drop=True)
-    con.execute("CREATE SCHEMA IF NOT EXISTS model")
-    con.execute("""CREATE TABLE IF NOT EXISTS model.zeroshot_runs (case_no VARCHAR, model VARCHAR,
-                   prompt_version VARCHAR, think BOOLEAN, probs VARCHAR, seconds DOUBLE)""")
+def answer_cases(con, todo: list, classes: list[str], client: httpx.Client, model: str = MODEL, workers: int = 1,
+                 show_labels: bool = True) -> None:
+    """Ask the model about each case (rows with case_no, masked_text, labels) and store the answers under the
+    current prompt version and reasoning setting. show_labels=False keeps test labels out of the progress lines."""
     key = (model, PROMPT_VERSION, THINK)
-    done = {r[0] for r in con.execute("SELECT case_no FROM model.zeroshot_runs WHERE model = ? AND "
-                                      "prompt_version = ? AND think = ?", list(key)).fetchall()}
-    todo = [r for r in val.itertuples(index=False) if r.case_no not in done]
-    if limit:
-        todo = todo[:limit]
-    print(f"{len(val)} validation cases, {len(done)} already answered by {model} (prompt {PROMPT_VERSION}, "
-          f"reasoning {'on' if THINK else 'off'}); {len(todo)} to run", flush=True)
+
     def one(r):
         t0, stats = time.monotonic(), {}
         probs = classify(r.masked_text or "", classes, client, model, stats)
@@ -208,11 +195,47 @@ def run(db: str, out: str, limit: int | None = None, client: httpx.Client | None
             con.execute("INSERT INTO model.zeroshot_runs VALUES (?, ?, ?, ?, ?, ?)",
                         [r.case_no, *key, json.dumps(probs), took])
             top = ", ".join(f"{c} {p:.2f}" for c, p in sorted(probs.items(), key=lambda kv: -kv[1])[:3])
+            truth = f" | true {r.labels or '-'}" if show_labels else ""
             elapsed = time.monotonic() - start
             print(f"  {i}/{len(todo)} {r.case_no}: {took:.1f} s (prompt "
                   f"{_rate(st.get('prompt_eval_count'), st.get('prompt_eval_duration'))}, answer "
-                  f"{_rate(st.get('eval_count'), st.get('eval_duration'))}) | true {r.labels or '-'} | top {top} | "
+                  f"{_rate(st.get('eval_count'), st.get('eval_duration'))}){truth} | top {top} | "
                   f"about {(len(todo) - i) * elapsed / i / 60:.0f} min left", flush=True)
+
+
+def ensure_table(con) -> None:
+    con.execute("CREATE SCHEMA IF NOT EXISTS model")
+    con.execute("""CREATE TABLE IF NOT EXISTS model.zeroshot_runs (case_no VARCHAR, model VARCHAR,
+                   prompt_version VARCHAR, think BOOLEAN, probs VARCHAR, seconds DOUBLE)""")
+
+
+def stored(con, case_nos, classes: list[str], prompt: str, model: str = MODEL, think: bool = THINK) -> np.ndarray | None:
+    """Stored probabilities for these cases in this order, or None if any case is missing."""
+    rows = dict(con.execute("SELECT case_no, probs FROM model.zeroshot_runs WHERE model = ? AND prompt_version = ? "
+                            "AND think = ?", [model, prompt, think]).fetchall())
+    if any(c not in rows for c in case_nos):
+        return None
+    return np.array([[json.loads(rows[c]).get(k, 0.0) for k in classes] for c in case_nos])
+
+
+def run(db: str, out: str, limit: int | None = None, client: httpx.Client | None = None,
+        model: str = MODEL, workers: int = 1) -> tuple[pd.DataFrame, float] | None:
+    client = client or httpx.Client(timeout=600)
+    con = duckdb.connect(db)
+    data = con.execute("SELECT case_no, split, masked_text, labels FROM model.dataset "
+                       "WHERE split IN ('train', 'validation')").df()
+    classes = sorted({lab for s in data[data.split == "train"]["labels"] for lab in _labels(s)})
+    val = data[data.split == "validation"].sort_values("case_no").reset_index(drop=True)
+    ensure_table(con)
+    key = (model, PROMPT_VERSION, THINK)
+    done = {r[0] for r in con.execute("SELECT case_no FROM model.zeroshot_runs WHERE model = ? AND "
+                                      "prompt_version = ? AND think = ?", list(key)).fetchall()}
+    todo = [r for r in val.itertuples(index=False) if r.case_no not in done]
+    if limit:
+        todo = todo[:limit]
+    print(f"{len(val)} validation cases, {len(done)} already answered by {model} (prompt {PROMPT_VERSION}, "
+          f"reasoning {'on' if THINK else 'off'}); {len(todo)} to run", flush=True)
+    answer_cases(con, todo, classes, client, model, workers)
 
     rows = dict(con.execute("SELECT case_no, probs FROM model.zeroshot_runs WHERE model = ? AND "
                             "prompt_version = ? AND think = ?", list(key)).fetchall())
