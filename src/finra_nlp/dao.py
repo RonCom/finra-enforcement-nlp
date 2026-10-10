@@ -239,8 +239,10 @@ def main() -> None:
     # again within a minute, so the search pace only recovers after 300 successes in a row
     client = PoliteClient(cache_dir="data/cache/finra", max_per_second=1.0, max_retries=6,
                           retry_wait=30.0, max_interval=4.0, recover_after=300, log=log)
+    # documents drew 429s too, after about 400 cases at 2/s; recover slowly, as for the search page
     pdf_client = PoliteClient(cache_dir="data/cache/finra", max_per_second=2.0, max_retries=6, retry_wait=30.0,
-                              max_interval=4.0, log=lambda m: print(f"  document: {m}", flush=True))
+                              max_interval=4.0, recover_after=300,
+                              log=lambda m: print(f"  document: {m}", flush=True))
     if a.cmd == "probe":
         probe(client, a.case)
     elif a.cmd == "index":
