@@ -11,13 +11,17 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-SUB = r"(?:\([a-zA-Z0-9]{1,4}\))*"
+SUB = r"(?:\([a-zA-Z0-9]{1,4}\))*(?:(?:\s*,\s*|\s+and\s+|\s+or\s+)\([a-zA-Z0-9]{1,4}\)(?:\([a-zA-Z0-9]{1,4}\))*)*"
 DESC = r"(?:\s*\((?=[^)]*\s)[^()]{2,80}\))?"  # "(ethical standards)", not "(a)"
 NUM_FINRA = rf"(?:IM-\d{{4}}(?:-\d+)?|\d{{4,5}}(?:\.\d{{2}})?){SUB}"
 NUM_SEC = rf"\d{{1,2}}[a-z]{{1,2}}\d?-\d{{1,2}}[a-z]?{SUB}"  # 10b-5, 17a-3, 15c3-1, 15l-1
 NUM_MSRB = rf"[A-G]-\d{{1,2}}{SUB}"
 NUM_SECTION = rf"\d{{1,2}}[A-Z]?{SUB}"
 NUM_NMS = rf"\d{{3}}{SUB}"
+NUM_NMS_6 = rf"6\d\d{SUB}"  # Regulation NMS rules are 600-613
+NUM_REG_M = rf"10[0-5]{SUB}"  # Regulation M rules are 100-105
+NUM_EXCHANGE = rf"\d{{1,4}}(?:\.\d{{1,2}})?[A-Z]?{SUB}"  # "Nasdaq Rule 4613", "Cboe Rule 4.24"
+EXCHANGES = r"(?:NASDAQ|Nasdaq|NYSE(?:\s+(?:Arca|American|MKT))?|Cboe|CBOE|BATS|Phlx|PHLX|ISE|MIAX|BOX|IEX)"
 SEP = r"(?:\s*,\s*(?:and\s+|or\s+)?|\s+and\s+|\s+or\s+)"
 
 
@@ -27,9 +31,17 @@ def _list(num: str) -> str:
 
 ACT = r"(?:the\s+)?(?:Securities\s+Exchange\s+Act(?:\s+of\s+1934)?|Exchange\s+Act|Securities\s+Act(?:\s+of\s+1933)?)"
 
+# OCR spells FINRA as "FlNRA", "F1NRA", "F?NRA", "FIN RA", "FIRNA" and glues it to the word before
+# ("ofFINRA", "andNASD"), so the names carry no leading word boundary. A misread name would otherwise
+# leave its rules to the bare pattern, which gives them the family of the citation before.
+FINRA_NAME = r"(?:FIN\s?RA|F[A-Za-z0-9?!|\[\]]{1,4}(?:RA|NA))"
+NASD_NAME = r"NAS[DO](?:\s*Cond\S*)?(?:\s+Membership\s+(?:and\s+)?Registration)?"
+
 PATTERNS: list[tuple[str, re.Pattern]] = [
-    ("FINRA", re.compile(rf"\bFINRA\s+Rules?\s+(?:Series\s+)?{_list(NUM_FINRA)}")),
-    ("NASD", re.compile(rf"\bNASD\s+(?:Conduct\s+)?(?:Rules?\s+|(?=IM-)){_list(NUM_FINRA)}")),
+    # exchange rules come first so the bare pattern doesn't give them the family of a FINRA citation
+    ("EXCHANGE", re.compile(rf"\b{EXCHANGES}\s+Rules?\s+{_list(NUM_EXCHANGE)}")),
+    ("FINRA", re.compile(rf"{FINRA_NAME}\s*Rules?\s+(?:Series\s+)?{_list(NUM_FINRA)}")),
+    ("NASD", re.compile(rf"{NASD_NAME}\s*(?:Rules?\s+|(?=IM-)){_list(NUM_FINRA)}")),
     ("MSRB", re.compile(rf"\bMSRB\s+Rules?\s+{_list(NUM_MSRB)}")),
     ("SEC_RULE", re.compile(rf"\b(?:Securities\s+Exchange\s+Act(?:\s+of\s+1934)?|Exchange\s+Act)\s+Rules?\s+{_list(NUM_SEC)}")),
     ("SEC_SECTION", re.compile(rf"\b(?:Exchange\s+Act|Securities\s+Exchange\s+Act(?:\s+of\s+1934)?)\s+Sections?\s+{_list(NUM_SECTION)}")),
@@ -38,6 +50,11 @@ PATTERNS: list[tuple[str, re.Pattern]] = [
     ("REG_NMS", re.compile(rf"\bRules?\s+{_list(NUM_NMS)}\s+of\s+Regulation\s+NMS")),
     ("REG_SHO", re.compile(rf"\bRegulation\s+SHO\s+Rules?\s+{_list(NUM_NMS)}")),
     ("REG_SHO", re.compile(rf"\bRules?\s+{_list(NUM_NMS)}\s+of\s+Regulation\s+SHO")),
+    ("REG_NMS", re.compile(rf"\b(?:Exchange\s+Act|SEC)\s+Rules?\s+{_list(NUM_NMS_6)}(?![-\d])")),
+    ("REG_NMS", re.compile(rf"\bRules?\s+{_list(NUM_NMS_6)}\s+(?:under|of)\s+{ACT}")),
+    ("REG_M", re.compile(rf"\bRegulation\s+M\s+Rules?\s+{_list(NUM_REG_M)}")),
+    ("REG_M", re.compile(rf"\bRules?\s+{_list(NUM_REG_M)}\s+of\s+Regulation\s+M\b")),
+    ("REG_M", re.compile(rf"\bSEC\s+Rules?\s+{_list(NUM_REG_M)}(?![-\d])")),
     ("SEC_RULE", re.compile(rf"\bRules?\s+{_list(NUM_SEC)}")),  # bare "Rule 10b-5" is always an SEC rule
     ("BARE", re.compile(rf"\bRules?\s+(?:Series\s+)?{_list(NUM_FINRA)}")),
 ]
@@ -46,13 +63,14 @@ ONE = {
     "FINRA": re.compile(NUM_FINRA), "NASD": re.compile(NUM_FINRA), "BARE": re.compile(NUM_FINRA),
     "MSRB": re.compile(NUM_MSRB), "SEC_RULE": re.compile(NUM_SEC),
     "SEC_SECTION": re.compile(NUM_SECTION), "SECTION_OF_ACT": re.compile(NUM_SECTION),
-    "REG_NMS": re.compile(NUM_NMS), "REG_SHO": re.compile(NUM_NMS),
+    "REG_NMS": re.compile(NUM_NMS), "REG_SHO": re.compile(NUM_NMS), "REG_M": re.compile(NUM_REG_M),
+    "EXCHANGE": re.compile(NUM_EXCHANGE),
 }
 
 
 @dataclass(frozen=True)
 class Citation:
-    family: str     # FINRA, NASD, MSRB, SEC_RULE, SEC_SECTION, SA_SECTION, REG_NMS, REG_SHO
+    family: str     # FINRA, NASD, MSRB, SEC_RULE, SEC_SECTION, SA_SECTION, REG_NMS, REG_SHO, REG_M, EXCHANGE
     rule: str       # as written, with subsections: "3110(a)", "15l-1(a)(1)"
     base: str       # without subsections or supplementary material: "3110", "15l-1"
     start: int

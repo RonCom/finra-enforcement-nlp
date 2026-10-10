@@ -95,3 +95,25 @@ def test_labels_use_the_index(tmp_path, monkeypatch):
     con = duckdb.connect(db)
     got = dict(con.execute("SELECT case_no, doc_rules FROM raw.case_document_labels").fetchall())
     assert got == {"111": "FINRA:4530|FINRA:2010|FINRA:3110", "222": ""}
+
+
+def test_disciplinary_history_and_prior_awcs_dropped():
+    text = ("RELEVANT DISCIPLINARY HISTORY On October 10, 2013, the firm was fined for violations of FINRA Rules "
+            "6622, 7330 and 2010. On May 1, 2012, FINRA accepted an AWC finding violations of FINRA Rule 5123. "
+            "In 2011, the firm consented to a censure for violations of NASD Rule 3010. The SEC filed a complaint "
+            "against the issuer alleging violations of Exchange Act Rule 10b-5. OVERVIEW The conduct described "
+            "in this paragraph constitutes separate and distinct violations of FINRA Rule 7330.")
+    assert labels_from_document(text) == ["FINRA:7330"]
+
+
+def test_sales_charge_waivers_are_not_the_waiver_of_rights():
+    text = ("By failing to reasonably supervise mutual fund sales to ensure that customers received sales charge "
+            "waivers, Summit violated NASD Conduct Rule 3010, FINRA Rule 3110 and FINRA Rule 2010. Respondent "
+            "waives any right to claim a violation of FINRA Rule 9143.")
+    assert labels_from_document(text) == ["NASD:3010", "FINRA:3110", "FINRA:2010"]
+
+
+def test_procedural_rules_and_decimal_amounts():
+    text = ("Pursuant to FINRA Rule 9216, Respondent submits this AWC to settle the alleged rule violations "
+            "described below. The firm was fined $2.5 million for violations of FINRA Rules 3310 and 2010.")
+    assert labels_from_document(text) == ["FINRA:3310", "FINRA:2010"]

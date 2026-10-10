@@ -205,6 +205,7 @@ def main() -> None:
     s = sub.add_parser("sample")
     s.add_argument("--db", default="data/finra.duckdb")
     s.add_argument("--out", default="data/label_handcheck.csv")
+    s.add_argument("--seed", type=int, default=42, help="a new seed draws a fresh sample for a re-check")
     c = sub.add_parser("score")
     c.add_argument("--csv", default="data/label_handcheck.csv")
     p = sub.add_parser("profile")
@@ -215,7 +216,7 @@ def main() -> None:
     e.add_argument("--out", default="data/label_handcheck_docs.json")
     a = ap.parse_args()
     if a.cmd == "sample":
-        sample(a.db, a.out)
+        sample(a.db, a.out, seed=a.seed)
     elif a.cmd == "score":
         score(a.csv)
     elif a.cmd == "export":

@@ -35,8 +35,10 @@ from finra_nlp.http import PoliteClient
 from finra_nlp.monthly import pdf_text
 
 SEARCH_URL = "https://www.finra.org/rules-guidance/oversight-enforcement/finra-disciplinary-actions?search={case}"
+# a sentence runs to the next period; a period between digits ("$2.5 million") doesn't end it
 VIOLATION_RE = re.compile(
-    r"[^.]*\b(?:violated|violation|violations|in contravention of|constitut\w+)\b[^.]*\.", re.IGNORECASE
+    r"(?:[^.]|\.(?=\d))*\b(?:violated|violation|violations|in contravention of|constitut\w+)\b(?:[^.]|\.(?=\d))*\.",
+    re.IGNORECASE,
 )
 
 
@@ -121,7 +123,16 @@ def build_index(client: PoliteClient, db: str, since: str = "2015-01-01", pages:
 
 
 WAIVER_SECTION_RE = re.compile(r"WAIVER\s+OF\s+PROCEDURAL\s+RIGHTS", re.IGNORECASE)
-WAIVE_RE = re.compile(r"\bwaive", re.IGNORECASE)
+WAIVE_RE = re.compile(r"\bwaive[sd]?\b", re.IGNORECASE)  # the verb; "sales charge waivers" is conduct
+# Sentences about earlier cases (a "Relevant Disciplinary History" section, prior AWCs, actions against
+# others) cite rules this case didn't charge.
+PRIOR_RE = re.compile(
+    r"DISCIPLINARY\s+HISTORY|accepted an AWC|In an AWC|entry of an AWC|consented to (?:a|the) (?:censure|fine)"
+    r"|in which (?:it|the firm|he|she|Respondent) was (?:censured|fined|suspended|barred)|filed a complaint against",
+    re.IGNORECASE,
+)
+# The AWC procedure (9216) and the waiver of rights (9143, 9144) are cited in every AWC, never charged.
+PROCEDURAL = {"FINRA:9216", "FINRA:9143", "FINRA:9144"}
 
 
 def labels_from_document(text: str) -> list[str]:
@@ -129,6 +140,7 @@ def labels_from_document(text: str) -> list[str]:
 
     AWCs end with a procedural-rights waiver that mentions Rules 9143 and 9144 next to
     the word "violated"; text from that heading on is dropped, as is any sentence that waives.
+    Sentences about earlier cases (PRIOR_RE) are dropped too: they cite rules from other cases.
     """
     text = re.sub(r"\s+", " ", text)
     cut = WAIVER_SECTION_RE.search(text)
@@ -136,10 +148,11 @@ def labels_from_document(text: str) -> list[str]:
         text = text[: cut.start()]
     keys: dict[str, None] = {}
     for sent in VIOLATION_RE.finditer(text):
-        if WAIVE_RE.search(sent.group(0)):
+        if WAIVE_RE.search(sent.group(0)) or PRIOR_RE.search(sent.group(0)):
             continue
         for c in extract_citations(sent.group(0)):
-            keys[c.key] = None
+            if c.key not in PROCEDURAL:
+                keys[c.key] = None
     return list(keys)
 
 

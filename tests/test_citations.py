@@ -46,6 +46,27 @@ def test_footnote_against_rule_number(text, expected):
     assert keys(text) == expected
 
 
+@pytest.mark.parametrize("text,expected", [
+    ("violated NASD Rule 3040 and FlNRA Rules 3280 and 2010", ["NASD:3040", "FINRA:3280", "FINRA:2010"]),
+    ("FINRA Rule 2010 and violation ofNASD Rule 3010(a)", ["FINRA:2010", "NASD:3010"]),
+    ("FINRA Rule 2010 andNASD Rule 3010", ["FINRA:2010", "NASD:3010"]),
+    ("FINRA Rule 4511 and NASO Rule 3010", ["FINRA:4511", "NASD:3010"]),
+    ("NASD Rule 3010(b) and F?NRA Rule 2010", ["NASD:3010", "FINRA:2010"]),
+    ("NASD Rule 3010 and FIN RA Rule 2010 and FIRNA Rule 4511", ["NASD:3010", "FINRA:2010", "FINRA:4511"]),
+    ("FINRA Rule 2010 and NASD Condi?Ct Rule 2420", ["FINRA:2010", "NASD:2420"]),
+    ("FINRA Rule 2010 and NASD Membership and Registration Rule 1031(a)", ["FINRA:2010", "NASD:1031"]),
+    ("violated Exchange Act Rule 606 and FINRA Rule 2010", ["REG_NMS:606", "FINRA:2010"]),
+    ("violated Rule 606 under the Securities Exchange Act of 1934", ["REG_NMS:606"]),
+    ("the SEC Rule 101 violations", ["REG_M:101"]),
+    ("Rule 102 of Regulation M", ["REG_M:102"]),
+    ("violated Nasdaq Rule 4613 and FINRA Rule 2010", ["EXCHANGE:4613", "FINRA:2010"]),
+    ("violated FINRA Rules 3110(a) and (b) and 2010", ["FINRA:3110", "FINRA:2010"]),
+    ("NASD Conduct Rules 3010(a) and (b) and FINRA Rule 2010", ["NASD:3010", "FINRA:2010"]),
+])
+def test_ocr_names_and_other_regulations(text, expected):
+    assert keys(text) == expected
+
+
 def test_years_and_amounts_are_not_rules():
     assert keys("In 2010, the firm paid $2,010 across 3110 accounts from May 2022.") == []
 
