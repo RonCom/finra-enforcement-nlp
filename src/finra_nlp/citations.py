@@ -71,6 +71,21 @@ class Citation:
         return f"{self.family}:{int(digits) // 1000 * 1000}"
 
 
+# Five-digit rule numbers that exist: FINRA's Uniform Practice, arbitration and mediation codes
+# (11000-14999), NASD's arbitration code and Uniform Practice Code (10000-11999).
+FIVE_DIGIT = {"FINRA": (11000, 14999), "NASD": (10000, 11999)}
+
+
+def _drop_footnote(family: str, base: str) -> str:
+    """A footnote number printed against a rule number reads as one longer number: "NASD Rule 30401"
+    is Rule 3040 with footnote 1, "FINRA Rule 201028" is Rule 2010 with footnote 28. A five-digit
+    FINRA or NASD number outside the ranges that exist keeps its first four digits."""
+    lo, hi = FIVE_DIGIT.get(family, (0, 0))
+    if family in FIVE_DIGIT and re.fullmatch(r"\d{5}", base) and not lo <= int(base) <= hi:
+        return base[:4]
+    return base
+
+
 def _base(rule: str) -> str:
     rule = re.sub(r"\(.*$", "", rule)
     if re.fullmatch(r"\d{4,5}\.\d{2}", rule):
@@ -105,7 +120,8 @@ def extract_citations(text: str) -> list[Citation]:
         cleaned = re.sub(r"\((?=[^)]*\s)[^()]{2,80}\)", lambda d: " " * len(d.group(0)), nums_text)
         for n in parser.finditer(cleaned):
             rule = n.group(0)
-            out.append(Citation(family, rule, _base(rule), nums_start + n.start(), nums_start + n.end()))
+            out.append(Citation(family, rule, _drop_footnote(family, _base(rule)),
+                                nums_start + n.start(), nums_start + n.end()))
     return out
 
 

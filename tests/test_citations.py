@@ -32,6 +32,20 @@ def test_extract(text, expected):
     assert keys(text) == expected
 
 
+@pytest.mark.parametrize("text,expected", [
+    ("violated NASD Rule 30401 and FINRA Rule 2010.", ["NASD:3040", "FINRA:2010"]),
+    ("violated FINRA Rules 8210 and 20101 by failing", ["FINRA:8210", "FINRA:2010"]),
+    ("FINRA Rules 2020 and 201028 by marking the close", ["FINRA:2020", "FINRA:2010"]),
+    ("violated NASD Rules 3010 and 30122 and FINRA Rules 3110 and 2010", ["NASD:3010", "NASD:3012", "FINRA:3110",
+                                                                         "FINRA:2010"]),
+    ("FINRA Rules 45112 and 2010", ["FINRA:4511", "FINRA:2010"]),
+    # five-digit rules that exist are kept
+    ("FINRA Rule 12904 and FINRA Rule 11870 and NASD Rule 10330", ["FINRA:12904", "FINRA:11870", "NASD:10330"]),
+])
+def test_footnote_against_rule_number(text, expected):
+    assert keys(text) == expected
+
+
 def test_years_and_amounts_are_not_rules():
     assert keys("In 2010, the firm paid $2,010 across 3110 accounts from May 2022.") == []
 

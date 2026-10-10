@@ -1,5 +1,5 @@
 """Spot-check of labels outside the hand-check: a sample of OCR labels, and every citation whose
-rule number doesn't exist in the Rulebook's numbering (FINRA above 14999, NASD above 10999).
+rule number doesn't exist in the Rulebook's numbering (FINRA above 14999, NASD above 11999).
 Reads cached documents and OCR text only, never the network.
 
     uv run python scripts/label_spotcheck.py                 # writes data/label_spotcheck.json
@@ -22,7 +22,7 @@ from finra_nlp.labels import _set, case_labels
 from finra_nlp.monthly import pdf_text
 from finra_nlp.ocr import cache_path
 
-LIMIT = {"FINRA": 14999, "NASD": 10999}
+LIMIT = {"FINRA": 14999, "NASD": 11999}
 
 
 def odd(key: str) -> bool:
