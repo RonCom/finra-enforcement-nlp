@@ -12,9 +12,15 @@ model.zeroshot_validation. Only the validation split is read.
 Settings (shell): OLLAMA_MODEL (default gemma4:26b), OLLAMA_NUM_CTX (default 4096), OLLAMA_THINK (default
 false: reasoning off), OLLAMA_URL.
 
+Speed: each progress line shows prompt and answer tokens and their rates, so you can see which dominates.
+--workers 2 sends two cases at once (start Ollama with OLLAMA_NUM_PARALLEL=2 or more); --recheck 20 asks 20
+already-answered cases again under the current settings and reports how far the probabilities moved, without
+storing anything, so a speed setting can be checked before it's used for the rest of the run.
+
 Usage:
     uv run python -m finra_nlp.zeroshot --limit 5     # check the answers and the time per case first
     uv run python -m finra_nlp.zeroshot
+    uv run python -m finra_nlp.zeroshot --recheck 20  # after changing a speed setting
 """
 
 from __future__ import annotations
@@ -23,6 +29,7 @@ import argparse
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import duckdb
@@ -112,21 +119,54 @@ def _post_waiting(client: httpx.Client, payload: dict) -> httpx.Response:
         time.sleep(5)
 
 
-def classify(text: str, classes: list[str], client: httpx.Client, model: str = MODEL) -> dict[str, float]:
+def classify(text: str, classes: list[str], client: httpx.Client, model: str = MODEL,
+             stats: dict | None = None) -> dict[str, float]:
+    """Probabilities per series. If stats is given, it gets Ollama's token counts and durations."""
     payload = {
-        "model": model, "stream": False, "think": THINK, "format": schema(classes),
+        "model": model, "stream": False, "think": THINK, "format": schema(classes), "keep_alive": "30m",
         "options": {"temperature": 0, "num_ctx": NUM_CTX},
         "messages": [{"role": "system", "content": SYSTEM.format(series=_series_block(classes))},
                      {"role": "user", "content": text}],
     }
     resp = _post_waiting(client, payload)
     resp.raise_for_status()
-    answer = json.loads(resp.json()["message"]["content"])
+    body = resp.json()
+    if stats is not None:
+        stats.update({k: body.get(k) for k in ("prompt_eval_count", "prompt_eval_duration", "eval_count",
+                                               "eval_duration", "load_duration")})
+    answer = json.loads(body["message"]["content"])
     return {c: min(1.0, max(0.0, float(answer.get(c, 0.0)))) for c in classes}
 
 
+def _rate(n, ns) -> str:
+    return f"{n} tok at {n / (ns / 1e9):.0f}/s" if n and ns else f"{n or 0} tok"
+
+
+def recheck(db: str, n: int, client: httpx.Client, model: str = MODEL) -> None:
+    """Ask n answered cases again under the current settings; report how far the probabilities moved."""
+    con = duckdb.connect(db, read_only=True)
+    rows = con.execute("""SELECT r.case_no, r.probs, d.masked_text FROM model.zeroshot_runs r
+                          JOIN model.dataset d USING (case_no)
+                          WHERE r.model = ? AND r.prompt_version = ? AND r.think = ? ORDER BY r.case_no LIMIT ?""",
+                       [model, PROMPT_VERSION, THINK, n]).fetchall()
+    con.close()
+    diffs, flips, secs = [], 0, []
+    for case_no, old, text in rows:
+        old = json.loads(old)
+        t0 = time.monotonic()
+        new = classify(text or "", list(old), client, model)
+        secs.append(time.monotonic() - t0)
+        d = [abs(new[k] - old[k]) for k in old]
+        diffs += d
+        flips += sum((new[k] >= 0.5) != (old[k] >= 0.5) for k in old)
+        print(f"  {case_no}: largest change {max(d):.2f}, {secs[-1]:.1f} s", flush=True)
+    if rows:
+        print(f"{len(rows)} cases asked again: mean change {np.mean(diffs):.3f}, largest {max(diffs):.2f}, "
+              f"{flips} series flipped across 0.5 (of {len(diffs)}); median {np.median(secs):.1f} s per case")
+
+
 def run(db: str, out: str, limit: int | None = None, client: httpx.Client | None = None,
-        model: str = MODEL) -> tuple[pd.DataFrame, float] | None:
+        model: str = MODEL, workers: int = 1) -> tuple[pd.DataFrame, float] | None:
     client = client or httpx.Client(timeout=600)
     con = duckdb.connect(db)
     data = con.execute("SELECT case_no, split, masked_text, labels FROM model.dataset "
@@ -144,17 +184,22 @@ def run(db: str, out: str, limit: int | None = None, client: httpx.Client | None
         todo = todo[:limit]
     print(f"{len(val)} validation cases, {len(done)} already answered by {model} (prompt {PROMPT_VERSION}, "
           f"reasoning {'on' if THINK else 'off'}); {len(todo)} to run", flush=True)
+    def one(r):
+        t0, stats = time.monotonic(), {}
+        probs = classify(r.masked_text or "", classes, client, model, stats)
+        return r, probs, time.monotonic() - t0, stats
+
     start = time.monotonic()
-    for i, r in enumerate(todo, 1):
-        t0 = time.monotonic()
-        probs = classify(r.masked_text or "", classes, client, model)
-        took = time.monotonic() - t0
-        con.execute("INSERT INTO model.zeroshot_runs VALUES (?, ?, ?, ?, ?, ?)",
-                    [r.case_no, *key, json.dumps(probs), took])
-        top = ", ".join(f"{c} {p:.2f}" for c, p in sorted(probs.items(), key=lambda kv: -kv[1])[:3])
-        elapsed = time.monotonic() - start
-        print(f"  {i}/{len(todo)} {r.case_no}: {took:.1f} s | true {r.labels or '-'} | top {top} | "
-              f"about {(len(todo) - i) * elapsed / i / 60:.0f} min left", flush=True)
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:  # results come back in order; DuckDB writes here
+        for i, (r, probs, took, st) in enumerate(pool.map(one, todo), 1):
+            con.execute("INSERT INTO model.zeroshot_runs VALUES (?, ?, ?, ?, ?, ?)",
+                        [r.case_no, *key, json.dumps(probs), took])
+            top = ", ".join(f"{c} {p:.2f}" for c, p in sorted(probs.items(), key=lambda kv: -kv[1])[:3])
+            elapsed = time.monotonic() - start
+            print(f"  {i}/{len(todo)} {r.case_no}: {took:.1f} s (prompt "
+                  f"{_rate(st.get('prompt_eval_count'), st.get('prompt_eval_duration'))}, answer "
+                  f"{_rate(st.get('eval_count'), st.get('eval_duration'))}) | true {r.labels or '-'} | top {top} | "
+                  f"about {(len(todo) - i) * elapsed / i / 60:.0f} min left", flush=True)
 
     rows = dict(con.execute("SELECT case_no, probs FROM model.zeroshot_runs WHERE model = ? AND "
                             "prompt_version = ? AND think = ?", list(key)).fetchall())
@@ -195,8 +240,13 @@ def main() -> None:
     ap.add_argument("--out", default="reports/zeroshot_validation.md")
     ap.add_argument("--limit", type=int, help="answer at most this many more cases (to check the timing)")
     ap.add_argument("--model", default=MODEL)
+    ap.add_argument("--workers", type=int, default=1, help="cases sent at once; needs OLLAMA_NUM_PARALLEL >= this")
+    ap.add_argument("--recheck", type=int, help="ask this many answered cases again and report the change")
     a = ap.parse_args()
-    run(a.db, a.out, a.limit, model=a.model)
+    if a.recheck:
+        recheck(a.db, a.recheck, httpx.Client(timeout=600), a.model)
+    else:
+        run(a.db, a.out, a.limit, model=a.model, workers=a.workers)
 
 
 if __name__ == "__main__":

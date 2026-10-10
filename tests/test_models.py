@@ -155,8 +155,10 @@ def test_zeroshot_scores_and_resumes(tmp_path):
     dataset.build(db)
     c = _Ollama()
     assert zeroshot.run(db, str(tmp_path / "z.md"), limit=5, client=c) is None  # report waits for all cases
-    per, macro = zeroshot.run(db, str(tmp_path / "z.md"), client=c)
+    per, macro = zeroshot.run(db, str(tmp_path / "z.md"), client=c, workers=3)
     assert c.calls == 20  # 5 + the remaining 15, none twice
+    zeroshot.recheck(db, 4, c)
+    assert c.calls == 24
     assert per.loc["FINRA:3000", "f1"] == 1.0 and per.loc["FINRA:2000", "f1"] == 1.0
     con = duckdb.connect(db, read_only=True)
     assert con.execute("SELECT count(*) FROM model.zeroshot_validation").fetchone()[0] == 20
