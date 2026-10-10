@@ -130,7 +130,7 @@ PRIOR_RE = re.compile(
     r"DISCIPLINARY\s+HISTORY|accepted an AWC|In an AWC|entry of an AWC|consented to (?:a|the) (?:censure|fine)"
     r"|in which (?:it|the firm|he|she|Respondent) was (?:censured|fined|suspended|barred)|filed a complaint against"
     r"|entered into an AWC|issued a Letter of Acceptance|Prior Matter|consented to violations of"
-    r"|\bwas censured and fined|\bincluded fines? of|\bin that proceeding",
+    r"|\bwas censured and fined|\bincluded fines? of|\bin that proceeding|consented to findings that",
     re.IGNORECASE,
 )
 # The Code of Procedure (FINRA 9000-9999: AWCs, waivers of rights, hearings, defaults, appeals), the SEC's

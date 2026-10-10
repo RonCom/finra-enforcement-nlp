@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 SUB = r"(?:\([a-zA-Z0-9]{1,4}\))*(?:(?:\s*,\s*|\s+and\s+|\s+or\s+)\([a-zA-Z0-9]{1,4}\)(?:\([a-zA-Z0-9]{1,4}\))*)*"
 DESC = r"(?:\s*\((?=[^)]*\s)[^()]{2,80}\))?"  # "(ethical standards)", not "(a)"
-NUM_FINRA = rf"(?:IM-\d{{4,5}}(?:-\d+)?|\d{{4,5}}(?:\.\d{{2}})?){SUB}"
+NUM_FINRA = rf"(?:IM-\d{{4,5}}(?:-\d+)?|\d{{4,5}}[A-C]?(?:\.\d{{2}})?){SUB}"  # "6380A", "7230A"
 NUM_IM = rf"IM-\d{{4,5}}(?:-\d+)?{SUB}"
 NUM_SEC = rf"\d{{1,2}}[a-z]{{1,2}}\d?-\d{{1,2}}[a-z]?{SUB}"  # 10b-5, 17a-3, 15c3-1, 15l-1
 NUM_MSRB = rf"[A-G]-\d{{1,2}}{SUB}"
@@ -134,6 +134,7 @@ def _drop_footnote(family: str, base: str) -> str:
 
 def _base(rule: str) -> str:
     rule = re.sub(r"\(.*$", "", rule)
+    rule = re.sub(r"^(\d{4,5})[A-C]", r"\1", rule)  # 6380A is in the 6380 family
     if re.fullmatch(r"\d{4,5}\.\d{2}", rule):
         rule = rule.split(".")[0]
     return rule

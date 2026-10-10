@@ -130,5 +130,6 @@ def test_procedural_rules_and_other_cases_are_not_labels():
 def test_more_prior_case_phrasings():
     text = ("In 2016, Torino was censured and fined $2,000 for violations of FINRA Rule 6730. The AWC included fines "
             "of $30,000 for violations of FINRA Rule 6760. The findings in that proceeding stated violations of "
-            "FINRA Rule 2210. The firm violated FINRA Rules 3110 and 2010.")
+            "FINRA Rule 2210. DBAB consented to findings that it had violated NASD Rule 2860. The firm violated FINRA Rules "
+            "3110 and 2010.")
     assert labels_from_document(text) == ["FINRA:3110", "FINRA:2010"]

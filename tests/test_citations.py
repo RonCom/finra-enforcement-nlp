@@ -60,6 +60,7 @@ def test_footnote_against_rule_number(text, expected):
     ("the SEC Rule 101 violations", ["REG_M:101"]),
     ("Rule 102 of Regulation M", ["REG_M:102"]),
     ("violated Nasdaq Rule 4613 and FINRA Rule 2010", ["EXCHANGE:4613", "FINRA:2010"]),
+    ("violations of FINRA Rules 6380A, 6622, 7230A and 7330", ["FINRA:6380", "FINRA:6622", "FINRA:7230", "FINRA:7330"]),
     ("violated FINRA Rules 3110(a) and (b) and 2010", ["FINRA:3110", "FINRA:2010"]),
     ("NASD Conduct Rules 3010(a) and (b) and FINRA Rule 2010", ["NASD:3010", "FINRA:2010"]),
 ])
