@@ -24,6 +24,11 @@ uv run python -m finra_nlp.dao probe --case 2023077018401
 # 4. Pull rule labels from the full case documents (raw.case_document_labels)
 uv run python -m finra_nlp.dao labels --limit 50
 uv run python -m finra_nlp.dao labels
+
+# 5. Cases whose document gives no rule fall back to the summary's citations; OCR the rest (needs Tesseract)
+uv run python scripts/dao_unlabeled.py           # why each document gave no rule
+uv run python -m finra_nlp.ocr --limit 3         # check Tesseract and the timing
+uv run python -m finra_nlp.ocr                   # raw.case_ocr_labels
 ```
 
 Data and the HTTP cache go in `data/`, which git ignores.

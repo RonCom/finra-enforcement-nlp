@@ -10,8 +10,10 @@ def _db(tmp_path, rows):
     con = duckdb.connect(db)
     con.execute("CREATE SCHEMA raw")
     df = pd.DataFrame(rows, columns=["case_no", "action_date", "report_month", "masked_text", "doc_rules"])
+    df["summary_rules"] = df.case_no.map({"c5": "FINRA:3110|FINRA:2010"}).fillna("")
     con.register("df", df)
-    con.execute("CREATE TABLE raw.monthly_cases AS SELECT case_no, action_date, report_month, masked_text FROM df")
+    con.execute("""CREATE TABLE raw.monthly_cases AS
+                   SELECT case_no, action_date, report_month, masked_text, summary_rules FROM df""")
     con.execute("CREATE TABLE raw.case_document_labels AS SELECT case_no, doc_rules FROM df")
     con.close()
     return db
@@ -30,7 +32,8 @@ def _cases():
     rows += [("c1", None, "2019-06", "late filing of a Form [RULE] amendment", "NASD:1000|FINRA:2010"),
              ("c2", "2024-02-01", "2024-03", "conduct inconsistent with just and equitable principles", "FINRA:2010"),
              ("c3", "2015-02-01", "2015-03", "too early", "FINRA:3110"),
-             ("c4", "2018-02-01", "2018-03", "no document labels", "")]
+             ("c4", "2018-02-01", "2018-03", "no document labels", ""),
+             ("c5", "2017-02-01", "2017-03", "document unreadable; the summary cites the rules", "")]
     return rows
 
 
@@ -41,6 +44,8 @@ def test_dataset(tmp_path):
     assert by.loc["c1", "split"] == "train" and by.loc["c1", "labels"] == "other"  # one NASD:1000 case
     assert by.loc["c2", "split"] == "test" and by.loc["c2", "labels"] == ""  # 2010 only
     assert by.loc["a1", "labels"] == "FINRA:3000" and by.loc["a61", "split"] == "validation"
+    assert by.loc["a1", "label_source"] == "document"
+    assert by.loc["c5", "label_source"] == "summary" and by.loc["c5", "labels"] == "FINRA:3000"
 
 
 def test_baseline(tmp_path):

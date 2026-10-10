@@ -56,6 +56,31 @@ def _cases(con) -> pd.DataFrame:
     ).df()
 
 
+def case_labels(con, ocr: bool = True) -> pd.DataFrame:
+    """One row per monthly-report case: the rules used as labels and where they came from.
+
+    Order: the case document's violation sentences; the monthly summary's citations when the document
+    gave no rule (old scans with garbled text, scrambled fonts, no text layer); then rules from an OCR
+    pass over the document (raw.case_ocr_labels, from `finra_nlp.ocr`). label_source is None when
+    no source has a rule.
+    """
+    has_ocr = ocr and con.execute(
+        """SELECT count(*) FROM information_schema.tables
+           WHERE table_schema = 'raw' AND table_name = 'case_ocr_labels'""").fetchone()[0]
+    ocr_rules = "o.ocr_rules" if has_ocr else "NULL"
+    ocr_join = "LEFT JOIN raw.case_ocr_labels o USING (case_no)" if has_ocr else ""
+    return con.execute(
+        f"""SELECT m.case_no,
+                   CASE WHEN coalesce(d.doc_rules, '') <> '' THEN d.doc_rules
+                        WHEN coalesce(m.summary_rules, '') <> '' THEN m.summary_rules
+                        WHEN coalesce({ocr_rules}, '') <> '' THEN {ocr_rules} ELSE '' END AS rules,
+                   CASE WHEN coalesce(d.doc_rules, '') <> '' THEN 'document'
+                        WHEN coalesce(m.summary_rules, '') <> '' THEN 'summary'
+                        WHEN coalesce({ocr_rules}, '') <> '' THEN 'ocr' END AS label_source
+            FROM raw.monthly_cases m LEFT JOIN raw.case_document_labels d USING (case_no) {ocr_join}"""
+    ).df()
+
+
 def sample(db: str, out: str, n: int = 100, seed: int = 42) -> None:
     con = duckdb.connect(db, read_only=True)
     df = _cases(con)
@@ -138,6 +163,13 @@ def profile(db: str, out: str) -> str:
         summary_cites_any=("sum_set", lambda s: round(s.map(bool).mean(), 3)),
     )
     lines += ["## Cases by report year", "", by_year.to_markdown(), ""]
+
+    con = duckdb.connect(db, read_only=True)
+    sources = case_labels(con).label_source.fillna("none").value_counts()
+    con.close()
+    lines += ["## Label source", "",
+              "Document violation sentences first, then the monthly summary's citations, then OCR of the document.",
+              "", sources.rename("cases").to_frame().to_markdown(), ""]
 
     share_2010 = labeled.doc_set.map(lambda s: CATCH_ALL in s).mean()
     lines += [f"Rule 2010 appears in {share_2010:.1%} of labeled cases and is dropped as a label.", ""]

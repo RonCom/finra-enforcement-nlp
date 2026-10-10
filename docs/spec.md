@@ -21,7 +21,7 @@ The corpus starts in 2016 so that every case cites the consolidated FINRA rule n
 
 ## Labels
 
-1. **Source:** labels come from the violation sentences of each case's full document (AWC, complaint or decision) in Disciplinary Actions Online, matched to the monthly summary by FINRA case number. Recent monthly summaries omit rule numbers for most cases. Where a summary does cite rules, its citations are kept as a second label set and their agreement with the full-document labels is reported.
+1. **Source:** labels come from the violation sentences of each case's full document (AWC, complaint or decision) in Disciplinary Actions Online, matched to the monthly summary by FINRA case number. Recent monthly summaries omit rule numbers for most cases. Where a summary does cite rules, its citations are kept as a second label set and their agreement with the full-document labels is reported. Where the document gives no rule, the summary's citations are the label, then rules from an OCR pass over the document (see change log, 2026-10-10); each case's label source is kept.
 2. **Extraction:** regex pulls every cited rule: "FINRA Rule(s) NNNN", "NASD Rule NNNN", "MSRB Rule G-NN", "Exchange Act Rule NN…" and statute sections.
 3. **Hand-check:** check 100 cases by hand. The gate is citation precision and recall ≥ 0.98 before going further.
 4. **Classifier labels:** the rule series, as numbered in the Rulebook (2000, 3000, 4000, 5000, 6000, 7000, 8000 and so on). Rule 2010 is dropped as a label because FINRA cites it alongside nearly every other violation; its frequency is reported.
@@ -86,3 +86,4 @@ uv, DuckDB, dbt for the case and label tables, MLflow for runs, GitHub Actions r
 | --- | --- | --- |
 | 2026-10-08 | Labels from full case documents; summary citations kept as a second label set | The July 2026 monthly report cites rule numbers in a minority of its cases; the October 2023 report still cited them. Seen while writing the parser, before any data pull. |
 | 2026-10-08 | Rule titles no longer masked; their presence is reported | Titles name the conduct, so removing them removes facts the classifier needs |
+| 2026-10-10 | Cases whose document gives no rule take the monthly summary's citations; cases with neither go through OCR (Tesseract) and the same violation-sentence rules. A `label_source` column records document, summary or OCR. The 100-case hand-check stays on document labels; summary labels are checked through their agreement with document labels where both exist. | 213 of 6,198 cases had a document but no rule: 133 old scans whose OCR text garbles rule numbers, 53 with no text layer, about 20 whose fonts extract as shifted characters, and a few short or non-AWC documents. Dropping them would thin 2016–2017 training data. |

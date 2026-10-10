@@ -47,3 +47,23 @@ def test_profile(tmp_path):
     assert "Rule 2010 appears in 97.6% of labeled cases" in text
     assert "| FINRA:3000 |            40 | False" in text
     assert "20 cases have both. Identical sets: 100.0%" in text
+
+
+def test_case_labels_order(tmp_path):
+    db = str(tmp_path / "c.duckdb")
+    con = duckdb.connect(db)
+    con.execute("CREATE SCHEMA raw")
+    con.execute("""CREATE TABLE raw.monthly_cases AS SELECT * FROM (VALUES
+                   ('1', 'FINRA:2111'), ('2', 'FINRA:2111'), ('3', ''), ('4', '')) t(case_no, summary_rules)""")
+    con.execute("""CREATE TABLE raw.case_document_labels AS SELECT * FROM (VALUES
+                   ('1', 'FINRA:3110'), ('2', ''), ('3', ''), ('4', '')) t(case_no, doc_rules)""")
+    got = labels.case_labels(con).set_index("case_no")
+    assert got.loc["1", "rules"] == "FINRA:3110" and got.loc["1", "label_source"] == "document"
+    assert got.loc["2", "rules"] == "FINRA:2111" and got.loc["2", "label_source"] == "summary"
+    assert got.loc["3", "rules"] == "" and pd.isna(got.loc["3", "label_source"])
+    con.execute("""CREATE TABLE raw.case_ocr_labels AS SELECT * FROM (VALUES
+                   ('2', 'u', 'FINRA:4511'), ('3', 'u', 'FINRA:4511')) t(case_no, doc_url, ocr_rules)""")
+    got = labels.case_labels(con).set_index("case_no")
+    assert got.loc["2", "label_source"] == "summary"  # the summary still comes before OCR
+    assert got.loc["3", "rules"] == "FINRA:4511" and got.loc["3", "label_source"] == "ocr"
+    con.close()

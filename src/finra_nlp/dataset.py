@@ -1,8 +1,9 @@
 """Classifier dataset (spec, "Classifier"): masked summaries with series labels and date splits.
 
-Labels come from the case documents (raw.case_document_labels.doc_rules). Each rule maps to its
+Labels come from the case documents, or the monthly summary's citations or an OCR pass where the
+document gave no rule (labels.case_labels; label_source says which). Each rule maps to its
 series (FINRA:3110 -> FINRA:3000), Rule 2010 is dropped, and series with fewer than
-MIN_SERIES_CASES training cases merge into "other". Cases without document labels are left out.
+MIN_SERIES_CASES training cases merge into "other". Cases with no rule from any source are left out.
 A case that cites only Rule 2010 keeps an empty label set.
 
 Splits use the action date (the report month when the date is missing):
@@ -19,7 +20,7 @@ import argparse
 import duckdb
 import pandas as pd
 
-from finra_nlp.labels import CATCH_ALL, MIN_SERIES_CASES, TRAIN_YEARS, _set, series_label
+from finra_nlp.labels import CATCH_ALL, MIN_SERIES_CASES, TRAIN_YEARS, _set, case_labels, series_label
 
 VALIDATION_YEAR = 2023
 TEST_YEARS = (2024, 2026)
@@ -40,21 +41,19 @@ def split_for(year: int | None) -> str | None:
 
 def build(db: str, write: bool = True) -> pd.DataFrame:
     con = duckdb.connect(db, read_only=not write)
-    df = con.execute(
-        """SELECT m.case_no, m.action_date, m.report_month, m.masked_text, d.doc_rules
-           FROM raw.monthly_cases m JOIN raw.case_document_labels d USING (case_no)
-           WHERE coalesce(d.doc_rules, '') <> ''"""
-    ).df()
+    df = con.execute("SELECT case_no, action_date, report_month, masked_text FROM raw.monthly_cases").df()
+    df = df.merge(case_labels(con), on="case_no")
+    df = df[df.rules != ""].copy()
     year = pd.to_datetime(df.action_date, errors="coerce").dt.year
     df["year"] = year.fillna(pd.to_numeric(df.report_month.str[:4], errors="coerce")).astype("Int64")
     df["split"] = df.year.map(split_for)
     df = df[df.split.notna()].copy()
-    df["series"] = df.doc_rules.map(lambda s: sorted({series_label(k) for k in _set(s) if k != CATCH_ALL}))
+    df["series"] = df.rules.map(lambda s: sorted({series_label(k) for k in _set(s) if k != CATCH_ALL}))
 
     counts = df[df.split == "train"].series.explode().value_counts()
     keep = set(counts[counts >= MIN_SERIES_CASES].index)
     df["labels"] = df.series.map(lambda ss: "|".join(sorted({s if s in keep else OTHER for s in ss})))
-    out = df[["case_no", "year", "split", "masked_text", "doc_rules", "labels"]].reset_index(drop=True)
+    out = df[["case_no", "year", "split", "masked_text", "rules", "label_source", "labels"]].reset_index(drop=True)
 
     if write:
         con.execute("CREATE SCHEMA IF NOT EXISTS model")
@@ -63,7 +62,9 @@ def build(db: str, write: bool = True) -> pd.DataFrame:
     con.close()
 
     print(out.groupby("split").agg(cases=("case_no", "size"),
-                                   no_label=("labels", lambda s: int((s == "").sum()))).to_string())
+                                   no_label=("labels", lambda s: int((s == "").sum())),
+                                   from_summary=("label_source", lambda s: int((s == "summary").sum())),
+                                   from_ocr=("label_source", lambda s: int((s == "ocr").sum()))).to_string())
     print(f"series kept: {sorted(keep)}")
     merged = sorted(set(counts.index) - keep)
     print(f"merged into '{OTHER}': {merged or 'none'}")
