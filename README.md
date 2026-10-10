@@ -48,6 +48,8 @@ uv run python -m finra_nlp.masking          # exits 1 if any masked summary stil
 ```powershell
 uv run python -m finra_nlp.dataset          # model.dataset: series labels, 2010 dropped, splits by action date
 uv run python -m finra_nlp.baseline         # TF-IDF + logistic regression; reports/baseline_validation.md (validation only)
+uv run python -m finra_nlp.zeroshot --limit 5   # local model through Ollama: check answers and time per case
+uv run python -m finra_nlp.zeroshot         # all validation cases (resumes); reports/zeroshot_validation.md
 ```
 
 ## Rulebook

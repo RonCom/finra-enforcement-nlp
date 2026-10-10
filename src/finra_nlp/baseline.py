@@ -52,15 +52,21 @@ def macro_supported(per: pd.DataFrame, min_support: int = MIN_SUPPORT) -> tuple[
 def evaluate(vec, clf, mlb, df: pd.DataFrame) -> tuple[pd.DataFrame, float, np.ndarray]:
     y = mlb.transform(df["labels"].map(_labels))
     prob = clf.predict_proba(vec.transform(df.masked_text.fillna("")))
+    per, macro = score(list(mlb.classes_), y, prob)
+    return per, macro, prob
+
+
+def score(classes: list[str], y: np.ndarray, prob: np.ndarray) -> tuple[pd.DataFrame, float]:
+    """Per-series support, predictions at THRESHOLD, F1 and Brier score; and macro-F1. Shared by all models."""
     pred = (prob >= THRESHOLD).astype(int)
     rows = []
-    for j, name in enumerate(mlb.classes_):
+    for j, name in enumerate(classes):
         rows.append({"series": name, "support": int(y[:, j].sum()), "predicted": int(pred[:, j].sum()),
                      "f1": f1_score(y[:, j], pred[:, j], zero_division=0),
-                     "brier": brier_score_loss(y[:, j], prob[:, j]) if len(df) else float("nan")})
+                     "brier": brier_score_loss(y[:, j], prob[:, j]) if len(y) else float("nan")})
     per = pd.DataFrame(rows).set_index("series")
     macro = f1_score(y, pred, average="macro", zero_division=0)
-    return per, macro, prob
+    return per, macro
 
 
 def run(db: str, out: str) -> tuple[pd.DataFrame, float]:

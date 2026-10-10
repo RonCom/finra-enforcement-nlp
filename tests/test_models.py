@@ -123,3 +123,40 @@ def test_download_needs_terms(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     with pytest.raises(SystemExit, match="rulebook_terms_accepted"):
         rulebook.download(_Client({}), "f.duckdb", 1)
+
+
+class _Ollama:
+    """Answers like Ollama: supervision summaries get FINRA:3000, the rest FINRA:2000."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def post(self, url, json):
+        import json as js
+        self.calls += 1
+        text = json["messages"][1]["content"]
+        assert "FINRA:3000" in json["format"]["properties"] and "Rule 2010" in json["messages"][0]["content"]
+        ans = {"FINRA:3000": 0.9, "FINRA:2000": 0.1} if "supervise" in text else {"FINRA:3000": 0.1, "FINRA:2000": 0.8}
+
+        class R:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"message": {"content": js.dumps(ans)}}
+        return R()
+
+
+def test_zeroshot_scores_and_resumes(tmp_path):
+    from finra_nlp import zeroshot
+    db = _db(tmp_path, _cases())
+    dataset.build(db)
+    c = _Ollama()
+    assert zeroshot.run(db, str(tmp_path / "z.md"), limit=5, client=c) is None  # report waits for all cases
+    per, macro = zeroshot.run(db, str(tmp_path / "z.md"), client=c)
+    assert c.calls == 20  # 5 + the remaining 15, none twice
+    assert per.loc["FINRA:3000", "f1"] == 1.0 and per.loc["FINRA:2000", "f1"] == 1.0
+    con = duckdb.connect(db, read_only=True)
+    assert con.execute("SELECT count(*) FROM model.zeroshot_validation").fetchone()[0] == 20
