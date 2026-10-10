@@ -21,7 +21,7 @@ import duckdb
 import pandas as pd
 
 from finra_nlp.citations import extract_citations
-from finra_nlp.dao import VIOLATION_RE, WAIVER_SECTION_RE
+from finra_nlp.dao import SEARCH_URL, VIOLATION_RE, WAIVER_SECTION_RE, document_links
 from finra_nlp.http import PoliteClient
 from finra_nlp.monthly import pdf_text
 
@@ -56,20 +56,28 @@ def main() -> None:
     ap.add_argument("--out", default="data/dao_unlabeled.csv")
     a = ap.parse_args()
     con = duckdb.connect(a.db, read_only=True)
-    cases = con.execute("""SELECT case_no FROM raw.case_document_labels
-                           WHERE coalesce(doc_rules, '') = '' AND n_docs > 0 ORDER BY case_no""").df()
+    cases = con.execute("""SELECT d.case_no, d.doc_url, m.action_date FROM raw.case_document_labels d
+                           JOIN raw.monthly_cases m USING (case_no)
+                           WHERE coalesce(d.doc_rules, '') = '' AND d.n_docs > 0 ORDER BY d.case_no""").df()
     docs = con.execute("SELECT case_no, doc_url, doc_type, action_date FROM raw.dao_index").df()
     con.close()
     client = PoliteClient(cache_dir="data/cache/finra")
     rows = []
-    for case_no in cases.case_no:
-        best = None
-        for d in docs[docs.case_no == case_no].itertuples(index=False):
-            reason, chars, snippet = diagnose(client, d.doc_url)
-            row = {"case_no": case_no, "reason": reason, "doc_type": d.doc_type, "action_date": d.action_date,
-                   "chars": chars, "doc_url": d.doc_url, "snippet": snippet}
-            if best is None or ORDER.index(reason) < ORDER.index(best["reason"]):
-                best = row
+    for c in cases.itertuples(index=False):
+        found = docs[docs.case_no == c.case_no]
+        candidates = [(d.doc_url, d.doc_type, d.action_date) for d in found.itertuples(index=False)]
+        if not candidates:  # found by search, not in the index: links from the cached search page
+            url = SEARCH_URL.format(case=c.case_no)
+            links = document_links(client.get(url)[1], url, c.case_no) if client.cached(url) else []
+            links = links or ([c.doc_url] if c.doc_url else [])
+            candidates = [(u, "(searched)", c.action_date) for u in links]
+        best = {"case_no": c.case_no, "reason": "not cached", "doc_type": "(no link kept)",
+                "action_date": c.action_date, "chars": 0, "doc_url": None, "snippet": ""}
+        for doc_url, doc_type, action_date in candidates:
+            reason, chars, snippet = diagnose(client, doc_url)
+            if best["doc_url"] is None or ORDER.index(reason) < ORDER.index(best["reason"]):
+                best = {"case_no": c.case_no, "reason": reason, "doc_type": doc_type, "action_date": action_date,
+                        "chars": chars, "doc_url": doc_url, "snippet": snippet}
         rows.append(best)
     df = pd.DataFrame(rows)
     df.to_csv(a.out, index=False)
