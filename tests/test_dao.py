@@ -125,3 +125,10 @@ def test_procedural_rules_and_other_cases_are_not_labels():
             "violation of FINRA Rule 3240. DS consented to violations of FINRA Rule 2111. The records constituted "
             "records required under Exchange Act Rule 17a-3. Respondent violated FINRA Rules 8210 and 2010.")
     assert labels_from_document(text) == ["FINRA:8210", "FINRA:2010"]
+
+
+def test_more_prior_case_phrasings():
+    text = ("In 2016, Torino was censured and fined $2,000 for violations of FINRA Rule 6730. The AWC included fines "
+            "of $30,000 for violations of FINRA Rule 6760. The findings in that proceeding stated violations of "
+            "FINRA Rule 2210. The firm violated FINRA Rules 3110 and 2010.")
+    assert labels_from_document(text) == ["FINRA:3110", "FINRA:2010"]
