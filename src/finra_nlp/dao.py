@@ -135,13 +135,14 @@ PRIOR_RE = re.compile(
 )
 # The Code of Procedure (FINRA 9000-9999: AWCs, waivers of rights, hearings, defaults, appeals), the SEC's
 # standard for reviewing FINRA actions (Exchange Act Section 19) and FINRA's statutory mandate (Section 15A)
-# are cited in decisions and AWCs, never charged.
+# are cited in decisions and AWCs, never charged. So is the 0100 series (Rule 0140: FINRA rules apply to
+# associated persons).
 PROCEDURAL_SECTIONS = {"SEC_SECTION:19", "SEC_SECTION:15A"}
 
 
 def procedural(key: str) -> bool:
     family, _, rule = key.partition(":")
-    return key in PROCEDURAL_SECTIONS or (family == "FINRA" and re.fullmatch(r"9\d{3}", rule) is not None)
+    return key in PROCEDURAL_SECTIONS or (family == "FINRA" and re.fullmatch(r"(?:9\d|01)\d\d", rule) is not None)
 
 
 def labels_from_document(text: str) -> list[str]:

@@ -67,3 +67,12 @@ def test_case_labels_order(tmp_path):
     assert got.loc["2", "label_source"] == "summary"  # the summary still comes before OCR
     assert got.loc["3", "rules"] == "FINRA:4511" and got.loc["3", "label_source"] == "ocr"
     con.close()
+
+
+def test_nasd_rules_take_their_finra_successor_series():
+    assert labels.successor("NASD:3010") == "FINRA:3110"
+    assert labels.successor("NASD:9999") == "NASD:9999"
+    assert labels.successor("FINRA:3110") == "FINRA:3110"
+    # NASD 2110 becomes FINRA 2010 and is dropped like it; 0140 and the Code of Procedure are never labels
+    assert labels.label_series(["NASD:3010", "FINRA:3110", "NASD:2110", "FINRA:0140", "FINRA:9216",
+                                "NASD:2510", "SEC_RULE:17a-3"]) == {"FINRA:3000", "SEC_RULE"}

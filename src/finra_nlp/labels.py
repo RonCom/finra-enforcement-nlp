@@ -25,7 +25,7 @@ import duckdb
 import pandas as pd
 
 from finra_nlp.citations import extract_citations
-from finra_nlp.dao import VIOLATION_RE, WAIVER_SECTION_RE
+from finra_nlp.dao import VIOLATION_RE, WAIVER_SECTION_RE, procedural
 from finra_nlp.http import PoliteClient
 from finra_nlp.monthly import pdf_text
 
@@ -37,6 +37,36 @@ CATCH_ALL = "FINRA:2010"
 
 def _set(s: str) -> set[str]:
     return {x.strip() for x in (s or "").split("|") if x.strip()}
+
+
+# NASD rules and the FINRA rules that replaced them are the same obligation under two numbers; which one
+# a case cites depends on when the conduct happened. Series labels use the FINRA successor.
+NASD_SUCCESSOR = {
+    "1021": "1210", "1022": "1220", "1031": "1210", "1032": "1220", "IM-1000-1": "1122",
+    "2110": "2010", "2210": "2210", "2310": "2111", "2320": "5310", "2340": "2231", "2370": "3240",
+    "2420": "2040", "2440": "2121", "IM-2440": "2121", "IM-2440-1": "2121", "2510": "3260", "2520": "4210",
+    "2711": "2241", "2830": "2341", "2860": "2360", "3010": "3110", "3011": "3310", "3012": "3120",
+    "3013": "3130", "3030": "3270", "3040": "3280", "3050": "3210", "3070": "4530", "3110": "4511",
+    "3310": "5210", "6955": "7450", "8210": "8210",
+}
+
+
+def successor(key: str) -> str:
+    """NASD:3010 -> FINRA:3110. NASD rules with no successor here keep their own key."""
+    family, _, rule = key.partition(":")
+    if family == "NASD" and rule in NASD_SUCCESSOR:
+        return f"FINRA:{NASD_SUCCESSOR[rule]}"
+    return key
+
+
+def label_series(keys) -> set[str]:
+    """Series labels for a case's rule keys: FINRA successors, Rule 2010 and procedural rules dropped."""
+    out = set()
+    for k in keys:
+        k = successor(k)
+        if k != CATCH_ALL and not procedural(k):
+            out.add(series_label(k))
+    return out
 
 
 def series_label(key: str) -> str:
@@ -177,7 +207,7 @@ def profile(db: str, out: str) -> str:
     train = labeled[labeled.year.between(*TRAIN_YEARS)]
     counts: dict[str, int] = {}
     for s in train.doc_set:
-        for lab in {series_label(k) for k in s if k != CATCH_ALL}:
+        for lab in label_series(s):
             counts[lab] = counts.get(lab, 0) + 1
     sc = pd.Series(counts, name="train_cases").sort_values(ascending=False).to_frame()
     sc["merged_to_other"] = sc.train_cases < MIN_SERIES_CASES

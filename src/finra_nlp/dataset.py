@@ -2,7 +2,8 @@
 
 Labels come from the case documents, or the monthly summary's citations or an OCR pass where the
 document gave no rule (labels.case_labels; label_source says which). Each rule maps to its
-series (FINRA:3110 -> FINRA:3000), Rule 2010 is dropped, and series with fewer than
+series (FINRA:3110 -> FINRA:3000; an NASD rule takes its FINRA successor's series, NASD 3010 -> FINRA 3110),
+Rule 2010 and procedural rules are dropped, and series with fewer than
 MIN_SERIES_CASES training cases merge into "other". Cases with no rule from any source are left out.
 A case that cites only Rule 2010 keeps an empty label set.
 
@@ -20,7 +21,7 @@ import argparse
 import duckdb
 import pandas as pd
 
-from finra_nlp.labels import CATCH_ALL, MIN_SERIES_CASES, TRAIN_YEARS, _set, case_labels, series_label
+from finra_nlp.labels import MIN_SERIES_CASES, TRAIN_YEARS, _set, case_labels, label_series
 
 VALIDATION_YEAR = 2023
 TEST_YEARS = (2024, 2026)
@@ -48,7 +49,7 @@ def build(db: str, write: bool = True) -> pd.DataFrame:
     df["year"] = year.fillna(pd.to_numeric(df.report_month.str[:4], errors="coerce")).astype("Int64")
     df["split"] = df.year.map(split_for)
     df = df[df.split.notna()].copy()
-    df["series"] = df.rules.map(lambda s: sorted({series_label(k) for k in _set(s) if k != CATCH_ALL}))
+    df["series"] = df.rules.map(lambda s: sorted(label_series(_set(s))))
 
     counts = df[df.split == "train"].series.explode().value_counts()
     keep = set(counts[counts >= MIN_SERIES_CASES].index)
