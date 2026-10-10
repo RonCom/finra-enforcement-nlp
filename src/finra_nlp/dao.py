@@ -30,14 +30,14 @@ import duckdb
 import pandas as pd
 from bs4 import BeautifulSoup
 
-from finra_nlp.citations import extract_citations
+from finra_nlp.citations import extract_citations, fix_ocr_numbers
 from finra_nlp.http import PoliteClient
 from finra_nlp.monthly import pdf_text
 
 SEARCH_URL = "https://www.finra.org/rules-guidance/oversight-enforcement/finra-disciplinary-actions?search={case}"
 # a sentence runs to the next period; a period between digits ("$2.5 million") doesn't end it
 VIOLATION_RE = re.compile(
-    r"(?:[^.]|\.(?=\d))*\b(?:violated|violation|violations|in contravention of|constitut\w+)\b(?:[^.]|\.(?=\d))*\.",
+    r"(?:[^.]|\.(?=\d))*\b(?:violated|violation|violations|in contravention of)\b(?:[^.]|\.(?=\d))*\.",
     re.IGNORECASE,
 )
 
@@ -128,11 +128,19 @@ WAIVE_RE = re.compile(r"\bwaive[sd]?\b", re.IGNORECASE)  # the verb; "sales char
 # others) cite rules this case didn't charge.
 PRIOR_RE = re.compile(
     r"DISCIPLINARY\s+HISTORY|accepted an AWC|In an AWC|entry of an AWC|consented to (?:a|the) (?:censure|fine)"
-    r"|in which (?:it|the firm|he|she|Respondent) was (?:censured|fined|suspended|barred)|filed a complaint against",
+    r"|in which (?:it|the firm|he|she|Respondent) was (?:censured|fined|suspended|barred)|filed a complaint against"
+    r"|entered into an AWC|issued a Letter of Acceptance|Prior Matter|consented to violations of",
     re.IGNORECASE,
 )
-# The AWC procedure (9216) and the waiver of rights (9143, 9144) are cited in every AWC, never charged.
-PROCEDURAL = {"FINRA:9216", "FINRA:9143", "FINRA:9144"}
+# The Code of Procedure (FINRA 9000-9999: AWCs, waivers of rights, hearings, defaults, appeals), the SEC's
+# standard for reviewing FINRA actions (Exchange Act Section 19) and FINRA's statutory mandate (Section 15A)
+# are cited in decisions and AWCs, never charged.
+PROCEDURAL_SECTIONS = {"SEC_SECTION:19", "SEC_SECTION:15A"}
+
+
+def procedural(key: str) -> bool:
+    family, _, rule = key.partition(":")
+    return key in PROCEDURAL_SECTIONS or (family == "FINRA" and re.fullmatch(r"9\d{3}", rule) is not None)
 
 
 def labels_from_document(text: str) -> list[str]:
@@ -142,7 +150,7 @@ def labels_from_document(text: str) -> list[str]:
     the word "violated"; text from that heading on is dropped, as is any sentence that waives.
     Sentences about earlier cases (PRIOR_RE) are dropped too: they cite rules from other cases.
     """
-    text = re.sub(r"\s+", " ", text)
+    text = fix_ocr_numbers(re.sub(r"\s+", " ", text))
     cut = WAIVER_SECTION_RE.search(text)
     if cut:
         text = text[: cut.start()]
@@ -151,7 +159,7 @@ def labels_from_document(text: str) -> list[str]:
         if WAIVE_RE.search(sent.group(0)) or PRIOR_RE.search(sent.group(0)):
             continue
         for c in extract_citations(sent.group(0)):
-            if c.key not in PROCEDURAL:
+            if not procedural(c.key):
                 keys[c.key] = None
     return list(keys)
 

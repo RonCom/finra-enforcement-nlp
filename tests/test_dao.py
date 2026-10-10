@@ -117,3 +117,11 @@ def test_procedural_rules_and_decimal_amounts():
     text = ("Pursuant to FINRA Rule 9216, Respondent submits this AWC to settle the alleged rule violations "
             "described below. The firm was fined $2.5 million for violations of FINRA Rules 3310 and 2010.")
     assert labels_from_document(text) == ["FINRA:3310", "FINRA:2010"]
+
+
+def test_procedural_rules_and_other_cases_are_not_labels():
+    text = ("Respondent is notified that he may move to set aside this Default Decision under FINRA Rule 9269(c), "
+            "and the SEC reviews violations under Exchange Act Section 19(e). In the Prior Matter, FINRA found a "
+            "violation of FINRA Rule 3240. DS consented to violations of FINRA Rule 2111. The records constituted "
+            "records required under Exchange Act Rule 17a-3. Respondent violated FINRA Rules 8210 and 2010.")
+    assert labels_from_document(text) == ["FINRA:8210", "FINRA:2010"]
