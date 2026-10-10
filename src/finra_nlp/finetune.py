@@ -2,7 +2,9 @@
 train split's masked summaries and scored on the validation split with the baseline's metrics.
 
 Default model: answerdotai/ModernBERT-base (8,192-token context; summaries are cut at --max-len tokens and the
-share cut is reported). Training uses mixed precision on a GPU, AdamW with linear warmup and decay, and keeps
+share cut is reported). Training uses mixed precision on a GPU, AdamW with linear warmup and decay, a loss that
+weights each series' positive cases by sqrt(negatives / positives) so rare series aren't pushed under the
+threshold, and keeps
 the epoch with the best macro-F1 over series with 10+ validation cases. Writes reports/finetune_validation.md,
 model.finetune_validation (each validation case's probabilities) and the best model to data/models/finetune/.
 The test split is not read.
@@ -69,9 +71,17 @@ def predict(model, tok, texts: list[str], max_len: int, batch: int, device) -> n
     return np.concatenate(out) if out else np.zeros((0, model.config.num_labels))
 
 
-def run(db: str, out: str, model_name: str = DEFAULT_MODEL, epochs: int = 4, batch: int = 16, micro: int = 8,
+def pos_weights(y: np.ndarray, cap: float = 10.0) -> np.ndarray:
+    """Per-series weight on positive cases: sqrt(negatives / positives), between 1 and cap. Without it the
+    loss favors predicting 'no' for rare series, which then fall under the 0.5 threshold."""
+    pos = y.sum(axis=0)
+    neg = len(y) - pos
+    return np.clip(np.sqrt(neg / np.maximum(pos, 1)), 1.0, cap).astype(np.float32)
+
+
+def run(db: str, out: str, model_name: str = DEFAULT_MODEL, epochs: int = 6, batch: int = 16, micro: int = 8,
         max_len: int = 512, lr: float = 5e-5, seed: int = 0, limit_train: int | None = None,
-        save_dir: str | None = "data/models/finetune", loader=load) -> tuple[pd.DataFrame, float]:
+        save_dir: str | None = "data/models/finetune", loader=load, weighted: bool = True) -> tuple[pd.DataFrame, float]:
     import torch
 
     _seed(seed)
@@ -102,7 +112,8 @@ def run(db: str, out: str, model_name: str = DEFAULT_MODEL, epochs: int = 4, bat
     warm = max(1, int(0.1 * steps))
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min((s + 1) / warm, max(0.0, (steps - s) / (steps - warm))))
     scaler = torch.amp.GradScaler(enabled=device.type == "cuda")
-    loss_fn = torch.nn.BCEWithLogitsLoss()
+    weights = pos_weights(y_train) if weighted else np.ones(len(classes), dtype=np.float32)
+    loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor(weights, device=device))
 
     best, best_epoch, best_prob, log = -1.0, 0, None, []
     start = time.monotonic()
@@ -158,6 +169,7 @@ def run(db: str, out: str, model_name: str = DEFAULT_MODEL, epochs: int = 4, bat
     text = "\n".join([
         "# Fine-tuned transformer, validation split", "",
         f"Model {model_name}, {epochs} epochs (best: epoch {best_epoch}), batch {batch}, learning rate {lr}, "
+        f"positive weights {'sqrt(neg/pos), capped at 10' if weighted else 'none'}, "
         f"max {max_len} tokens ({cut:.1%} of training summaries cut), seed {seed}, device {device}. "
         f"Train cases: {len(train)}. Validation cases: {len(val)}. Threshold 0.5.", "",
         f"Macro-F1: {macro:.3f} (all {len(per)} series)", "",
@@ -176,15 +188,18 @@ def main() -> None:
     ap.add_argument("--db", default="data/finra.duckdb")
     ap.add_argument("--out", default="reports/finetune_validation.md")
     ap.add_argument("--model", default=DEFAULT_MODEL)
-    ap.add_argument("--epochs", type=int, default=4)
+    ap.add_argument("--epochs", type=int, default=6)
     ap.add_argument("--batch", type=int, default=16, help="effective batch size")
     ap.add_argument("--micro", type=int, default=8, help="cases per step on the GPU; lower it if memory runs out")
     ap.add_argument("--max-len", type=int, default=512)
     ap.add_argument("--lr", type=float, default=5e-5)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--limit-train", type=int, help="train on this many cases only (to check memory and speed)")
+    ap.add_argument("--no-weights", action="store_true", help="unweighted loss (the first validation run)")
     a = ap.parse_args()
-    run(a.db, a.out, a.model, a.epochs, a.batch, a.micro, a.max_len, a.lr, a.seed, a.limit_train)
+    out = a.out if a.seed == 0 or a.out != "reports/finetune_validation.md" else f"reports/finetune_validation_seed{a.seed}.md"
+    run(a.db, out, a.model, a.epochs, a.batch, a.micro, a.max_len, a.lr, a.seed, a.limit_train,
+        save_dir=f"data/models/finetune_seed{a.seed}" if a.seed else "data/models/finetune", weighted=not a.no_weights)
 
 
 if __name__ == "__main__":

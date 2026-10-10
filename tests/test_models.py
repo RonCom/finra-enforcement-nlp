@@ -1,4 +1,5 @@
 import duckdb
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -202,3 +203,10 @@ def test_finetune_learns_and_reports(tmp_path):
     con = duckdb.connect(db, read_only=True)
     assert con.execute("SELECT count(*) FROM model.finetune_validation").fetchone()[0] == 20
     assert "By epoch" in (tmp_path / "f.md").read_text()
+
+
+def test_pos_weights():
+    from finra_nlp.finetune import pos_weights
+    y = np.array([[1, 0], [1, 0], [0, 0], [0, 1]] * 25)
+    w = pos_weights(y)
+    assert w[0] == 1.0 and abs(w[1] - 3 ** 0.5) < 1e-6
