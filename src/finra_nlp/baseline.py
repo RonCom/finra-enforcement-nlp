@@ -1,7 +1,8 @@
 """Baseline classifier (spec, "Classifier"): TF-IDF and one-vs-rest logistic regression.
 
 Trains on the train split of model.dataset and scores the validation split. The test split is
-not read. Writes reports/baseline_validation.md with macro-F1, per-series F1 and the Brier score
+not read. Writes reports/baseline_validation.md with macro-F1 (all series, and series with 10+
+validation cases), per-series F1 and the Brier score
 per series, and model.baseline_validation with each validation case's predicted probabilities.
 
 Usage:
@@ -39,6 +40,15 @@ def fit(train: pd.DataFrame, seed: int = 0):
     return vec, clf, mlb
 
 
+MIN_SUPPORT = 10  # macro-F1 is also reported over series with at least this many validation cases
+
+
+def macro_supported(per: pd.DataFrame, min_support: int = MIN_SUPPORT) -> tuple[float, int]:
+    """Macro-F1 over series with enough validation cases that one case doesn't swing it; and their count."""
+    kept = per[per.support >= min_support]
+    return (float(kept.f1.mean()) if len(kept) else float("nan")), len(kept)
+
+
 def evaluate(vec, clf, mlb, df: pd.DataFrame) -> tuple[pd.DataFrame, float, np.ndarray]:
     y = mlb.transform(df["labels"].map(_labels))
     prob = clf.predict_proba(vec.transform(df.masked_text.fillna("")))
@@ -70,7 +80,9 @@ def run(db: str, out: str) -> tuple[pd.DataFrame, float]:
     text = "\n".join([
         "# Baseline: TF-IDF + one-vs-rest logistic regression, validation split", "",
         f"Train cases: {len(train)}. Validation cases: {len(val)}. Threshold {THRESHOLD}.", "",
-        f"Macro-F1: {macro:.3f}", "",
+        f"Macro-F1: {macro:.3f} (all {len(per)} series)", "",
+        f"Macro-F1, series with {MIN_SUPPORT}+ validation cases: {macro_supported(per)[0]:.3f} "
+        f"({macro_supported(per)[1]} series)", "",
         per.round(3).to_markdown(), "",
     ])
     Path(out).parent.mkdir(parents=True, exist_ok=True)

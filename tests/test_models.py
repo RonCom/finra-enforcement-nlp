@@ -54,6 +54,8 @@ def test_baseline(tmp_path):
     per, macro = baseline.run(db, str(tmp_path / "b.md"))
     assert per.loc["FINRA:3000", "f1"] == 1.0 and per.loc["FINRA:2000", "f1"] == 1.0
     assert per.loc["FINRA:3000", "brier"] < 0.1
+    m, n = baseline.macro_supported(per, min_support=5)
+    assert n == len(per[per.support >= 5]) and 0 <= m <= 1
     con = duckdb.connect(db, read_only=True)
     assert con.execute("SELECT count(*) FROM model.baseline_validation").fetchone()[0] == 20
 
