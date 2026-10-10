@@ -43,7 +43,7 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 MODEL = os.environ.get("OLLAMA_MODEL", "gemma4:26b")
 NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "4096"))
 THINK = os.environ.get("OLLAMA_THINK", "false").lower() in ("1", "true", "yes")
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"  # --prompt v1 reruns or rescores the first version
 WAIT_FOR_OLLAMA = 600  # seconds to keep retrying while Ollama starts or loads the model
 
 SERIES = {
@@ -86,7 +86,7 @@ SERIES = {
              "Regulation Crowdfunding, funding portal rules.",
 }
 
-SYSTEM = """You classify FINRA disciplinary actions by the rules FINRA charged. You read the monthly-report \
+SYSTEM_V1 = """You classify FINRA disciplinary actions by the rules FINRA charged. You read the monthly-report \
 summary of one case; rule numbers in it are replaced by [RULE]. For every rule series listed, give the \
 probability, from 0 to 1, that FINRA charged at least one rule in that series in this case. FINRA Rule 2010 \
 (standards of commercial honor) is charged in nearly every case and is not one of the series. A case usually \
@@ -94,6 +94,19 @@ charges rules in one to three series. Answer with JSON only.
 
 Rule series:
 {series}"""
+
+# v2 (after the v1 validation run): two sentences on how FINRA charges, for the two errors v1 made most.
+# Misconduct charged under Rule 2010 alone drew FINRA:2000 and 3000 predictions (2000 predicted 123 times for
+# 61 cases); statute sections charged with their rules were missed (SEC_SECTION predicted 13 times for 44).
+SYSTEM_V2 = SYSTEM_V1.replace(
+    "Answer with JSON only.",
+    "Cases about conversion of funds, forgery, falsified documents, false statements to a firm or other "
+    "unethical conduct, with no specific rule broken, are usually charged under Rule 2010 alone: give every series "
+    "a low probability for them. FINRA usually charges an Exchange Act or Securities Act section together with the "
+    "rule under it: Section 17(a) with Rules 17a-3 and 17a-4 (records), Section 15(c) with Rules 15c3-1, 15c3-3 and "
+    "15c3-5, Section 10(b) with Rule 10b-5; when a case involves one of those rules, consider the section too. "
+    "Answer with JSON only.")
+PROMPTS = {"v1": SYSTEM_V1, "v2": SYSTEM_V2}
 
 
 def _series_block(classes: list[str]) -> str:
@@ -125,7 +138,7 @@ def classify(text: str, classes: list[str], client: httpx.Client, model: str = M
     payload = {
         "model": model, "stream": False, "think": THINK, "format": schema(classes), "keep_alive": "30m",
         "options": {"temperature": 0, "num_ctx": NUM_CTX},
-        "messages": [{"role": "system", "content": SYSTEM.format(series=_series_block(classes))},
+        "messages": [{"role": "system", "content": PROMPTS[PROMPT_VERSION].format(series=_series_block(classes))},
                      {"role": "user", "content": text}],
     }
     resp = _post_waiting(client, payload)
@@ -235,14 +248,18 @@ def run(db: str, out: str, limit: int | None = None, client: httpx.Client | None
 
 
 def main() -> None:
+    global PROMPT_VERSION
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", default="data/finra.duckdb")
-    ap.add_argument("--out", default="reports/zeroshot_validation.md")
+    ap.add_argument("--out", help="default reports/zeroshot_validation_<prompt>.md")
+    ap.add_argument("--prompt", default=PROMPT_VERSION, choices=sorted(PROMPTS))
     ap.add_argument("--limit", type=int, help="answer at most this many more cases (to check the timing)")
     ap.add_argument("--model", default=MODEL)
     ap.add_argument("--workers", type=int, default=1, help="cases sent at once; needs OLLAMA_NUM_PARALLEL >= this")
     ap.add_argument("--recheck", type=int, help="ask this many answered cases again and report the change")
     a = ap.parse_args()
+    PROMPT_VERSION = a.prompt
+    a.out = a.out or f"reports/zeroshot_validation_{a.prompt}.md"
     if a.recheck:
         recheck(a.db, a.recheck, httpx.Client(timeout=600), a.model)
     else:
