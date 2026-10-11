@@ -68,7 +68,7 @@ The spec's reliability plot, drawn after the frozen run from the stored test pro
 | 0.9-1.0 | 0.974 (0.97) | 0.955 (0.99) | 0.833 (0.95) |
 | Expected calibration error | 0.040 | 0.013 | 0.037 |
 
-- **The fine-tuned model has the lowest ECE because it commits.** 86% of its points are under 0.1 and 7% over 0.9, where it's close to right; it leaves fewer points in the middle than the baseline (1,201 between 0.1 and 0.9 against 3,733). Where it does say 0.5-0.8, it overstates by 0.13-0.15.
+- **The fine-tuned model has the lowest ECE because it commits.** 86% of its points are under 0.1 and 7% over 0.9, where it's close to right; it leaves fewer points in the middle than the baseline (1,261 between 0.1 and 0.9 against 3,733). In its 0.5-0.6 and 0.7-0.8 bins it overstates by 0.14-0.15.
 - **The baseline overstates the low-middle range.** Its balanced class weights push probabilities up: of the points it scores 0.1-0.2, 3.5% are true labels; of 0.3-0.4, 18%. From 0.6 up it's within 0.06.
 - **The zero-shot model is overconfident and answers in round numbers.** Its probabilities come in steps of 0.1, most at 0, 0.1, 0.8 and 0.9-1.0; of the points it puts at 0.8-0.9, 46% are true labels, and at 0.9-1.0, 83%. Its macro-F1 is close to the others' at the 0.5 threshold, but its probabilities don't rank cases for review.
 - 73-86% of each model's points fall under 0.1, where every model is close to right, so ECE understates the gaps in the middle; the bins above show them.
