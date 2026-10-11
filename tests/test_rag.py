@@ -163,3 +163,19 @@ def test_rank_gives_one_chunk_per_rule(tmp_path):
     assert (chunks.rule_no == "8312").sum() > 2
     top = rag.Index(rdb, FakeEmbedder()).rank("BrokerCheck disclosure of disciplinary actions", "bm25", 3)
     assert sorted(top.rule_no) == ["3110", "8210", "8312"]
+
+
+def test_rank_conduct_only(tmp_path):
+    pages = pd.DataFrame(PAGES[:1] + [_page("9552", "9552. Failure to Provide Information",
+                                            "failure to provide information or testimony leads to suspension " * 5)])
+    rb = str(tmp_path / "rb.duckdb")
+    con = duckdb.connect(rb)
+    con.execute("CREATE SCHEMA raw")
+    con.register("df", pages)
+    con.execute("CREATE TABLE raw.rulebook_pages AS SELECT * FROM df")
+    con.close()
+    rdb = str(tmp_path / "rag.duckdb")
+    rag.build_index(rb, rdb, FakeEmbedder())
+    idx = rag.Index(rdb, FakeEmbedder())
+    assert idx.rank("failure to provide information", "bm25", 1).rule_no.iloc[0] == "9552"
+    assert idx.rank("failure to provide information", "bm25", 1, conduct_only=True).rule_no.iloc[0] == "3110"

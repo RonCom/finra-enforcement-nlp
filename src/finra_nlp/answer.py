@@ -161,7 +161,8 @@ def _answer_all(items: list[tuple[str, str, str, str]], kind: str, index, client
     todo = [it for it in items if it[0] not in done]
     print(f"{len(items) - len(todo)} already answered; answering {len(todo)}", flush=True)
     for i, (item_id, split, question, query) in enumerate(todo, 1):
-        chunks = index.rank(query, "hybrid", rag.TOP_K)
+        # a case asks which rules the conduct broke, so it searches the conduct rules; an H4 question searches all
+        chunks = index.rank(query, "hybrid", rag.TOP_K, conduct_only=kind == "case")
         a = answer(question, chunks, client, model)
         _store(con, {"kind": kind, "item_id": item_id, "split": split, "question": question,
                      "chunk_rules": "|".join(chunks.rule_no), "model": model, "prompt": ANSWER_PROMPT, **a})
