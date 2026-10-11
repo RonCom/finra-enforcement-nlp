@@ -59,8 +59,8 @@ def facts_section(text: str) -> tuple[str, str]:
     return body.strip()[:MAX_CHARS], kind
 
 
-def document_text(client: PoliteClient, url: str | None) -> str:
-    if not url:
+def document_text(client: PoliteClient, url) -> str:
+    if not isinstance(url, str) or not url:  # no document link comes through pandas as NaN
         return ""
     ocr = cache_path(url)
     if ocr.exists():

@@ -147,3 +147,8 @@ def test_facts_section_stops_before_the_first_violation_sentence():
     assert facts.startswith("Failure to disclose") and facts.endswith("He earned $40,000 from it.")
     assert "violat" not in facts.lower() and "3270" not in facts
     assert facts_section("No headings here. Respondent violated FINRA Rule 2010.") == ("", "")
+
+
+def test_document_text_without_a_link():
+    from finra_nlp.facts import document_text
+    assert document_text(None, float("nan")) == "" and document_text(None, None) == ""
