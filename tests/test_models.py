@@ -251,8 +251,10 @@ def test_frozen_test_run(tmp_path, monkeypatch):
     classes = ["FINRA:2000", "FINRA:3000", "other"]
     perfect = np.array([[float(k in s.split("|")) for k in classes] for s in test["labels"]])
     out = tmp_path / "test_results.md"
-    res = testrun.score_test(db, str(out), check=lambda o: "freeze-test at abc",
-                             ensemble=lambda db, split: (classes, test, [perfect], perfect))
+    def stub(path, split):  # opens the database read-only, as the real fine-tuned step does
+        duckdb.connect(path, read_only=True).close()
+        return classes, test, [perfect], perfect
+    res = testrun.score_test(db, str(out), check=lambda o: "freeze-test at abc", ensemble=stub)
     text = out.read_text()
     assert "H1" in text and "H2" in text and "freeze-test" in text
     assert res["Fine-tuned (average of 3 seeds)"]["macro_f1"] >= res["TF-IDF baseline"]["macro_f1"] - 1e-9

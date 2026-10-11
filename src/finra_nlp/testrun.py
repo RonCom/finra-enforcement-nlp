@@ -99,6 +99,7 @@ def score_test(db: str, out: str = REPORT, model: str = zeroshot.MODEL, check=fr
     if zs is None:
         raise SystemExit("The zero-shot model hasn't answered every test case; run "
                          "uv run python -m finra_nlp.testrun zeroshot first")
+    con.close()  # the fine-tuned step opens the database read-only; DuckDB won't mix that with this connection
     train = data[data.split == "train"]
     vec, clf, mlb = baseline.fit(train)
     if list(mlb.classes_) != classes:
@@ -125,6 +126,7 @@ def score_test(db: str, out: str = REPORT, model: str = zeroshot.MODEL, check=fr
     for name, prob in [("baseline", base), ("finetune", ft), ("zeroshot", zs)]:
         for j, c in enumerate(classes):
             probs[f"{name}:{c}"] = prob[:, j]
+    con = duckdb.connect(db)
     con.register("probs", probs)
     con.execute("CREATE OR REPLACE TABLE model.test_predictions AS SELECT * FROM probs")
     con.close()
