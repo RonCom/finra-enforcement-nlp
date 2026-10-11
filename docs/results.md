@@ -54,6 +54,23 @@ H1's interval excludes the 0.05 gain it called for. H2's excludes the 0.10 gap; 
 - **Statutes are hard for every model** (SEC_RULE 0.58-0.68, SEC_SECTION 0.49-0.69, SA_SECTION 0.51-0.57). Whether an AWC charges Section 17(a) next to Rule 17a-4, or only the rule, is a drafting choice the summary rarely shows.
 - **"other" (12 test cases, rare series merged) scores 0 for both trained models** and 0.214 for the zero-shot model, which costs the trained models about 0.05 of all-series macro-F1.
 
+### Calibration
+
+The spec's reliability plot, drawn after the frozen run from the stored test probabilities (`scripts/reliability.py`, `reports/reliability_test.md`): every case-and-series probability pooled, ten bins.
+
+| Predicted | Baseline: observed | Fine-tuned: observed | Zero-shot: observed |
+| --- | --- | --- | --- |
+| 0.1-0.2 | 0.035 (mean 0.14) | 0.117 (0.15) | 0.055 (0.10) |
+| 0.3-0.4 | 0.183 (0.34) | 0.223 (0.35) | 0.161 (0.30) |
+| 0.8-0.9 | 0.878 (0.85) | 0.797 (0.85) | 0.464 (0.81) |
+| 0.9-1.0 | 0.974 (0.97) | 0.955 (0.99) | 0.833 (0.95) |
+| Expected calibration error | 0.040 | 0.013 | 0.037 |
+
+- **The fine-tuned model's probabilities can be read as probabilities** (ECE 0.013). The other two can't, in different ways.
+- **The baseline over-states the middle.** Its balanced class weights push probabilities up: of the points it scores 0.1-0.2, 3.5% are true labels; of 0.3-0.4, 18%. Above 0.6 it's close.
+- **The zero-shot model is overconfident and answers in round numbers.** Its probabilities come in steps of 0.1, most at 0, 0.1, 0.8 and 0.9-1.0; of the points it puts at 0.8-0.9, 46% are true labels, and at 0.9-1.0, 83%. Its macro-F1 is close to the others' at the 0.5 threshold, but its probabilities don't rank cases for review.
+- 73-86% of each model's points fall in the lowest bin (0-0.1), where every model is close to right, so ECE understates the gaps in the middle; the bins above show them.
+
 ### Validation to test
 
 Both trained models lost 0.07-0.08 from validation to test (baseline 0.774 to 0.693, fine-tuned 0.766 to 0.694, all series); the zero-shot model held steady (0.667 to 0.664). The test years bring more cases in series that were rare in training (FINRA:5000 48 test cases vs 8 in validation, FINRA:6000 42 vs 7, "other" 12 vs 2). A model with no training labels doesn't depend on which series the training years happened to contain.

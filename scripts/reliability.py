@@ -101,6 +101,8 @@ def main() -> None:
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     Path(a.out + ".svg").write_text(svg(t, ece), encoding="utf-8")
     wide = t.pivot(index="bin", columns="model", values=["points", "mean_predicted", "observed"])
+    wide.columns = [f"{m} {v.replace('_', ' ')}" for v, m in wide.columns]
+    wide = wide[[f"{m} {v}" for m in MODELS for v in ("points", "mean predicted", "observed")]]
     lines = ["# Reliability, test split", "",
              f"Every (case, series) probability pooled over series, binned by predicted probability; descriptive, "
              f"drawn from the stored test predictions after the frozen run. Bins under {MIN_BIN} points are left "
