@@ -126,19 +126,24 @@ class Ollama:
         return v / np.linalg.norm(v, axis=1, keepdims=True)
 
 
-def build_index(rulebook_db: str = RULEBOOK_DB, rag_db: str = RAG_DB, embedder=None, show: int = 0) -> pd.DataFrame:
+def build_index(rulebook_db: str = RULEBOOK_DB, rag_db: str = RAG_DB, embedder=None, show: int = 0,
+                model: str | None = None) -> pd.DataFrame:
     con = duckdb.connect(rulebook_db, read_only=True)
     pages = con.execute("SELECT rule_no, title, url, text FROM raw.rulebook_pages").df()
     con.close()
     df = chunk_pages(pages)
-    emb = (embedder or Ollama()).embed((df["title"] + ". " + df["text"]).tolist(), "document")
+    embedder = embedder or Ollama(model=model or EMBED_MODEL)
+    emb = embedder.embed((df["title"] + ". " + df["text"]).tolist(), "document")
     df["embedding"] = list(emb)
     Path(rag_db).parent.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(rag_db)
     con.register("df", df)
     con.execute("CREATE OR REPLACE TABLE chunks AS SELECT * FROM df")
+    # queries must be embedded by the model that embedded the chunks; Index reads it from here
+    con.execute("CREATE OR REPLACE TABLE meta AS SELECT 'embed_model' AS key, ? AS value",
+                [getattr(embedder, "model", "unknown")])
     con.close()
-    print(f"{len(df)} chunks from {df.rule_no.nunique()} rules ({len(pages)} pages) in {rag_db}; median "
+    print(f"Embeddings: {getattr(embedder, 'model', 'unknown')}. {len(df)} chunks from {df.rule_no.nunique()} rules ({len(pages)} pages) in {rag_db}; median "
           f"{int(df.text.str.split().str.len().median())} words per chunk")
     for r in df[df.part == 0].sample(min(show, len(df)), random_state=0).itertuples(index=False) if show else []:
         print(f"\n--- {r.rule_no}: {r.title} ---\n{r.text[:800]}")
@@ -173,10 +178,14 @@ class Index:
         con = duckdb.connect(rag_db, read_only=True)
         self.chunks = con.execute("SELECT chunk_id, rule_no, title, url, part, text FROM chunks ORDER BY chunk_id").df()
         emb = con.execute("SELECT embedding FROM chunks ORDER BY chunk_id").fetchnumpy()["embedding"]
+        try:
+            self.model = con.execute("SELECT value FROM meta WHERE key = 'embed_model'").fetchone()[0]
+        except duckdb.CatalogException:  # an index built before the model was recorded
+            self.model = EMBED_MODEL
         con.close()
         self.emb = np.stack([np.asarray(e, np.float32) for e in emb])
         self.bm25 = BM25((self.chunks["title"] + " " + self.chunks["text"]).tolist())
-        self.embedder = embedder or Ollama()
+        self.embedder = embedder or Ollama(model=self.model)
 
     def scores(self, query: str, method: str, qvec: np.ndarray | None = None) -> np.ndarray:
         if method == "bm25":
@@ -297,7 +306,7 @@ def retrieval(db: str, split: str = "validation", rag_db: str = RAG_DB, out: str
              f"{len(cases)} cases; {len(scored)} charged at least one FINRA Rulebook rule other than 2010 and are scored "
              f"({len(cases) - len(scored)} charged only SEC, MSRB or other rules and are left out). "
              f"{int((~res.gold_in_book).sum()) if len(res) else 0} scored cases have no charged rule among the "
-             f"{len(in_book)} rules indexed. Query: the masked summary without its sanction and procedure sentences. Searched: the conduct rules (0100-8000). Hit: a charged rule is among the top {TOP_K} rules (each rule by its best chunk).",
+             f"{len(in_book)} rules indexed. Embeddings: {idx.model}. Query: the masked summary without its sanction and procedure sentences. Searched: the conduct rules (0100-8000). Hit: a charged rule is among the top {TOP_K} rules (each rule by its best chunk).",
              "", "Charged rules by part of the Rulebook: " + ", ".join(f"{p} {int(gold_parts.get(p, 0))}" for p in PARTS)
              + ".",
              "", "| Retriever | Hit rate, top 5 | MRR |", "| --- | --- | --- |"]
@@ -349,6 +358,7 @@ def main() -> None:
     i = sub.add_parser("index")
     i.add_argument("--rulebook-db", default=RULEBOOK_DB)
     i.add_argument("--show", type=int, default=0, help="print the first chunk of this many rules")
+    i.add_argument("--model", default=EMBED_MODEL, help="Ollama embedding model (default from RAG_EMBED_MODEL)")
     u = sub.add_parser("unindexed", help="list the Rulebook pages that produced no chunk")
     u.add_argument("--rulebook-db", default=RULEBOOK_DB)
     r = sub.add_parser("retrieval")
@@ -356,7 +366,7 @@ def main() -> None:
     r.add_argument("--split", default="validation", choices=["validation", "test"])
     a = ap.parse_args()
     if a.cmd == "index":
-        build_index(a.rulebook_db, show=a.show)
+        build_index(a.rulebook_db, show=a.show, model=a.model)
     elif a.cmd == "unindexed":
         unindexed(a.rulebook_db)
     else:

@@ -10,6 +10,7 @@ WORDS = {"supervise": 0, "supervisory": 0, "branch": 0, "cooperate": 1, "testimo
 
 class FakeEmbedder:
     """Bag of topic words: supervision, cooperation, records."""
+    model = "fake-embed"
 
     def embed(self, texts, kind):
         v = np.full((len(texts), 3), 0.01, dtype=np.float32)
@@ -179,3 +180,10 @@ def test_rank_conduct_only(tmp_path):
     idx = rag.Index(rdb, FakeEmbedder())
     assert idx.rank("failure to provide information", "bm25", 1).rule_no.iloc[0] == "9552"
     assert idx.rank("failure to provide information", "bm25", 1, conduct_only=True).rule_no.iloc[0] == "3110"
+
+
+def test_index_records_its_embedding_model(tmp_path):
+    rdb = str(tmp_path / "rag.duckdb")
+    rag.build_index(_rulebook(tmp_path), rdb, FakeEmbedder())
+    idx = rag.Index(rdb)
+    assert idx.model == "fake-embed" and idx.embedder.model == "fake-embed"
