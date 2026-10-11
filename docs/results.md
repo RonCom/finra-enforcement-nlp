@@ -23,7 +23,17 @@ Scored against the expectations in [spec.md](spec.md). The classifiers were tune
 
 H1 and H2 are judged on macro-F1 over all series, as pre-registered. The figure over series with 10+ cases was added during validation (spec change log) because series with one or two cases swing the all-series average by about 0.06 per case; it tells the same story here.
 
-The hand-checks put 3-5% of cases with a wrong series label, so differences under about 0.02 can't be read as a model being better. `scripts/test_bootstrap.py` gives paired bootstrap intervals for each difference from the stored test predictions (added after the test run; descriptive only).
+The hand-checks put 3-5% of cases with a wrong series label, so differences under about 0.02 can't be read as a model being better. Paired bootstrap over test cases (2,000 resamples, `scripts/test_bootstrap.py`, added after the test run and descriptive only) gives these 95% intervals:
+
+| | Value | 95% interval | Resamples above 0 |
+| --- | --- | --- | --- |
+| Baseline macro-F1 | 0.693 | 0.649 to 0.725 | |
+| Fine-tuned macro-F1 | 0.694 | 0.650 to 0.727 | |
+| Zero-shot macro-F1 | 0.664 | 0.622 to 0.699 | |
+| H1: fine-tuned minus baseline | +0.000 | -0.023 to +0.025 | 53% |
+| H2: fine-tuned minus zero-shot | +0.030 | -0.006 to +0.073 | 94% |
+
+H1's interval excludes the 0.05 gain it called for. H2's excludes the 0.10 gap; the fine-tuned model is probably ahead of the zero-shot model, but the interval doesn't rule out a tie.
 
 ### What each model does well
 
