@@ -139,8 +139,8 @@ def download(client: PoliteClient, db: str, limit: int | None) -> pd.DataFrame:
             continue
         rows.append(parse_rule(body, url))
         queue += [u for u in rule_links(body, url) if u not in seen]  # series pages list their rules
-        if len(rows) % 50 == 0:
-            print(f"  {len(rows)} pages")
+        if len(rows) % 25 == 0:
+            print(f"  {len(rows)} pages, {len(set(queue) - seen)} found and not yet read", flush=True)
     df = pd.DataFrame(rows, columns=["rule_no", "title", "url", "text"])
     con = duckdb.connect(db)
     con.execute("CREATE SCHEMA IF NOT EXISTS raw")
@@ -161,11 +161,17 @@ def main() -> None:
     d = sub.add_parser("download")
     d.add_argument("--db", default="data/rulebook.duckdb", help="its own file, so it can run beside other jobs")
     d.add_argument("--limit", type=int)
+    d.add_argument("--interval", type=float, default=15.0, help="seconds between page requests")
+    d.add_argument("--cooldown", type=float, default=300.0, help="seconds without requests after a 429")
     a = ap.parse_args()
-    # one page every 3 s; a 429 waits 30 s, then 60 s, ... before retrying and slows the pace to one per 10 s,
-    # which only speeds back up after 300 pages in a row (the DAO search page's settings, slower)
-    client = PoliteClient(cache_dir="data/cache/finra", max_per_second=1 / 3, max_retries=5, retry_wait=30.0,
-                          max_interval=10.0, recover_after=300, log=lambda m: print(f"  {m}", flush=True))
+    # At one page per 3 s finra.org answered 429 after about 50 pages, then let one page through every ~5 minutes
+    # while the client retried every 30-120 s. So: one page per --interval seconds (default 15); on a 429, no
+    # request at all for --cooldown seconds (default 300), then 2x and 3x that, and the pace halves until 300 pages
+    # in a row succeed.
+    interval = getattr(a, "interval", 15.0)
+    client = PoliteClient(cache_dir="data/cache/finra", max_per_second=1 / interval, max_retries=3,
+                          retry_wait=getattr(a, "cooldown", 300.0), max_interval=2 * interval, recover_after=300,
+                          log=lambda m: print(f"  {m}", flush=True))
     if a.cmd == "terms" and a.accept:
         Path(ACCEPTED).parent.mkdir(parents=True, exist_ok=True)
         Path(ACCEPTED).write_text(f"{date.today()}: {a.accept}\n", encoding="utf-8")
