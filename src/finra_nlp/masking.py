@@ -73,7 +73,7 @@ def titles(db: str, rulebook_db: str = "data/rulebook.duckdb", split: str = "tes
     by_series = ser.groupby("series").agg(cases=("title", "size"), with_title=("title", "mean"))
 
     lines = [f"# Rule titles in the masked summaries, {split} split", "",
-             f"Titles from {len(title_of)} Rulebook rules, matched as whole phrases, ignoring case. "
+             f"Titles from {len(title_of)} Rulebook rules, matched as phrases anywhere in the text, ignoring case. "
              f"{int(scored.sum())} of {len(cases)} {split} cases were charged with a FINRA rule in the Rulebook "
              "(NASD rules as their FINRA successors; Rule 2010 and procedural rules left out).", "",
              f"**{overall:.1%} of them have the title of a charged rule in their masked summary.**", "",
