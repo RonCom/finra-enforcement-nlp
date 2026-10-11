@@ -303,3 +303,31 @@ def test_download_stops_when_finra_keeps_refusing(tmp_path, monkeypatch):
     with pytest.raises(SystemExit, match="refused 3 pages"):
         rulebook.download(Refusing(), "f.duckdb", None)
     assert Refusing.calls == 1 + rulebook.MAX_REFUSED
+
+
+def test_title_share(tmp_path):
+    rb = str(tmp_path / "rb.duckdb")
+    con = duckdb.connect(rb)
+    con.execute("CREATE SCHEMA raw")
+    con.register("p", pd.DataFrame({"rule_no": ["3110", "3270", "8210"],
+                                    "title": ["3110. Supervision", "3270. Outside Business Activities of Registered "
+                                              "Persons", "8210. Provision of Information and Testimony"]}))
+    con.execute("CREATE TABLE raw.rulebook_pages AS SELECT * FROM p")
+    con.close()
+    db = str(tmp_path / "f.duckdb")
+    con = duckdb.connect(db)
+    con.execute("CREATE SCHEMA model")
+    con.register("d", pd.DataFrame({
+        "case_no": ["1", "2", "3", "4", "5", "6"], "split": "test",
+        "masked_text": ["Failed to establish a  SUPERVISION system.", "Inadequate supervision of the branch.",
+                        "Refused to testify.", "Did not respond to requests.", "Ran a tax business.",
+                        "Short sales under [RULE]."],
+        "rules": ["NASD:3010|FINRA:2010", "FINRA:3270", "FINRA:8210", "FINRA:8210", "FINRA:3270", "SEC_RULE:203"]}))
+    con.execute("CREATE TABLE model.dataset AS SELECT * FROM d")
+    con.close()
+    from finra_nlp.masking import clean_title, titles
+    assert clean_title("3270. Outside Business Activities.") == "outside business activities"
+    r = titles(db, rb, out=str(tmp_path / "t.md"), )
+    assert r["overall"] == 1 / 5  # case 1 only: NASD 3010 maps to 3110, whose title it contains
+    assert r["by_series"].loc["FINRA:3000", "cases"] == 3 and r["by_series"].loc["FINRA:3000", "with_title"] == 1 / 3
+    assert "20.0%" in (tmp_path / "t.md").read_text()

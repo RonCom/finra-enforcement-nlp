@@ -97,6 +97,7 @@ uv run python -m finra_nlp.rulebook download --limit 5    # data/rulebook.duckdb
 uv run python -m finra_nlp.rulebook download
 ollama pull nomic-embed-text
 uv run python -m finra_nlp.rag index                       # data/rag.duckdb: ~250-word chunks with embeddings
+uv run python -m finra_nlp.masking --titles                # reports/title_share.md: rule titles left in the test summaries
 uv run python -m finra_nlp.rag retrieval                   # reports/retrieval_validation.md, H3 on validation
 ```
 
