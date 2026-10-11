@@ -81,6 +81,10 @@ Both trained models lost 0.07-0.08 from validation to test (baseline 0.774 to 0.
 
 Monthly summaries are short, written by FINRA staff, and name the conduct in the words the rules use: "failed to supervise", "outside business activity", "refused to appear for on-the-record testimony". With rule numbers masked, those phrases carry most of the signal, and TF-IDF over word pairs captures them as well as a fine-tuned encoder does. The spec anticipated this in its limits: the summaries' authors know the charges, so the wording leans toward them.
 
+### Rule titles left in the summaries
+
+The spec kept rule titles in the masked summaries and asked for the share of test cases whose summary contains the title of a charged rule (`masking --titles`, `reports/title_share.md`; titles from the downloaded Rulebook, matched verbatim). It's 8.9% of the 950 test cases charged with a Rulebook rule. A few titles nearly name the charge: "options" (2360) is in 92% of the summaries charged under it and 2.3% of the rest, "customer confirmations" (2232) in 71% against 0.1%, "suitability" (2111) in 27% against 1.6%. Most titles never appear: "provision of information and testimony…" (8210) and "general requirements" (4511) in none, "outside business activities of registered persons" (3270) in none, though summaries say "outside business activity" or "OBA". So verbatim titles explain little of H1 and H2. The signal is the conduct phrases, which paraphrase the rules ("failed to supervise", "refused to appear for on-the-record testimony"), and a verbatim title count doesn't measure those.
+
 For H2, the zero-shot model came within 0.03 of the trained models with no labeled cases, given only a one-line description of each series. Labeled data bought 0.03 macro-F1 and better-calibrated probabilities; it also bought the ability to learn FINRA's charging conventions, which is where the zero-shot model's errors concentrate.
 
 ## H6: facts section vs. summary
