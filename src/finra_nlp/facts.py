@@ -2,8 +2,8 @@
 
 The labels come from the documents' violation sentences, so a model reading the whole document would read the
 answer. This keeps only the narrative of what happened: the text after the FACTS AND VIOLATIVE CONDUCT heading
-(or another facts heading), with "(Violation of ...)" sub-headings removed, cut at the first sentence that states
-a violation. Rule numbers are masked as in the summaries, then every sentence that quotes or explains a
+(or another facts heading) up to the sanctions or conclusions of law, with "(Violation of ...)" sub-headings and
+every sentence that states a violation removed. Rule numbers are masked as in the summaries, then every sentence that quotes or explains a
 rule is removed (narrative()), so the model reads what happened. Cases whose facts come to under MIN_CHARS characters
 are left out and counted. OCR text is used where the OCR pass read the document.
 
@@ -24,7 +24,7 @@ import duckdb
 import pandas as pd
 
 from finra_nlp.citations import leaks, mask
-from finra_nlp.dao import VIOLATION_RE, WAIVER_SECTION_RE
+from finra_nlp.dao import WAIVER_SECTION_RE
 from finra_nlp.http import PoliteClient
 from finra_nlp.monthly import pdf_text
 from finra_nlp.ocr import cache_path
@@ -36,6 +36,10 @@ HEADINGS = [  # tried in order; the first found starts the facts
     ("findings of fact", re.compile(r"FINDINGS\s+OF\s+FACTS?|Findings\s+of\s+Fact\b")),
     ("facts", re.compile(r"\b(?:[IVX]+\.\s*|[A-H]\.\s*)?(?:FACTS|Facts)\b(?=\s+[A-Z])")),
 ]
+# Where the facts end: the sanctions an AWC's respondent consents to, or a decision's conclusions and sanctions
+END_RE = re.compile(r"consents? to the imposition of the following sanctions|CONCLUSIONS?\s+OF\s+LAW|"
+                    r"\b(?:[IVX]+\.\s*)?SANCTIONS\b")
+STATED_RE = re.compile(r"\bviolat\w*|\bin contravention of\b", re.IGNORECASE)
 SUBHEAD_RE = re.compile(r"\(\s*(?:Alleged\s+)?Violations?\s+of\b.{0,300}?\)", re.IGNORECASE)
 # After masking, a sentence that quotes or explains a rule ("[RULE] prohibits registered persons from ...") says
 # which rule was charged as plainly as its number would; a complaint or tip has nothing like it. Such a sentence names
@@ -62,7 +66,8 @@ def narrative(masked: str) -> str:
 
 
 def facts_section(text: str) -> tuple[str, str]:
-    """(facts text, start heading or '' if none found). The text is unmasked."""
+    """(facts text, start heading or '' if none found). The text is unmasked; sentences stating a violation are
+    removed, and reading continues past them, since an AWC with several charges states each after its own facts."""
     text = re.sub(r"\s+", " ", text)
     cut = WAIVER_SECTION_RE.search(text)
     if cut:
@@ -75,11 +80,14 @@ def facts_section(text: str) -> tuple[str, str]:
             break
     if start is None:
         return "", ""
-    body = SUBHEAD_RE.sub(" ", text[start:])
-    v = VIOLATION_RE.search(body)
-    if v:
-        # VIOLATION_RE's match starts at the previous period; keep everything before that sentence
-        body = body[: v.start()]
+    body = text[start:]
+    end = END_RE.search(body, 40)  # skip the "and Conclusions of Law" of a "Findings of Fact and ..." heading
+    if end:
+        body = body[: end.start()]
+        # drop the "B. Respondent also" before the cut
+        body = re.sub(r"\s+(?:[A-Z]|[IVX]+)\.$", "", body[: body.rfind(".") + 1] or body)
+    body = SUBHEAD_RE.sub(" ", body)
+    body = " ".join(x for x in SENTENCE_RE.split(body) if x and not STATED_RE.search(x))
     return body.strip()[:MAX_CHARS], kind
 
 

@@ -135,16 +135,19 @@ def test_more_prior_case_phrasings():
     assert labels_from_document(text) == ["FINRA:3110", "FINRA:2010"]
 
 
-def test_facts_section_stops_before_the_first_violation_sentence():
+def test_facts_section_drops_violation_sentences_and_reads_past_them():
     from finra_nlp.facts import facts_section
     text = ("OVERVIEW Respondent violated FINRA Rules 3270 and 2010 by engaging in an outside business. "
             "FACTS AND VIOLATIVE CONDUCT Failure to disclose outside business activities (Violation of FINRA Rules "
             "3270 and 2010) From 2019 through 2021, Smith operated a tax preparation business. He did not tell "
             "his firm. He earned $40,000 from it. By engaging in an outside business activity without notice, "
-            "Smith violated FINRA Rules 3270 and 2010. WAIVER OF PROCEDURAL RIGHTS Respondent waives.")
+            "Smith violated FINRA Rules 3270 and 2010. Separately, Smith shared customer lists with the business. "
+            "B. Respondent also consents to the imposition of the following sanctions: a fine. "
+            "WAIVER OF PROCEDURAL RIGHTS Respondent waives.")
     facts, kind = facts_section(text)
     assert kind == "facts and violative conduct"
-    assert facts.startswith("Failure to disclose") and facts.endswith("He earned $40,000 from it.")
+    assert facts.startswith("Failure to disclose") and "He earned $40,000 from it." in facts
+    assert facts.endswith("shared customer lists with the business.")
     assert "violat" not in facts.lower() and "3270" not in facts
     assert facts_section("No headings here. Respondent violated FINRA Rule 2010.") == ("", "")
 
