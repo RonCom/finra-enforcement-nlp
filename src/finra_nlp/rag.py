@@ -258,18 +258,36 @@ def retrieval(db: str, split: str = "validation", rag_db: str = RAG_DB, out: str
     return res
 
 
+def unindexed(rulebook_db: str = RULEBOOK_DB, show: int = 100) -> pd.DataFrame:
+    """Rules with a page but no chunk (rule text under 15 words, or a series page), with what their text says."""
+    con = duckdb.connect(rulebook_db, read_only=True)
+    pages = con.execute("SELECT rule_no, title, url, text FROM raw.rulebook_pages").df()
+    con.close()
+    kept = set(chunk_pages(pages).rule_no)
+    left = pages[~pages.rule_no.astype(str).str.upper().isin(kept)].copy()
+    left["body"] = [rule_body(t or "", ti or "") for t, ti in zip(left.text, left.title)]
+    print(f"{len(left)} of {len(pages)} pages have no chunk")
+    for r in left.sort_values("rule_no").head(show).itertuples(index=False):
+        print(f"  {r.rule_no}: {r.title[:60]} | {r.body[:100]!r}")
+    return left
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
     i = sub.add_parser("index")
     i.add_argument("--rulebook-db", default=RULEBOOK_DB)
     i.add_argument("--show", type=int, default=0, help="print the first chunk of this many rules")
+    u = sub.add_parser("unindexed", help="list the Rulebook pages that produced no chunk")
+    u.add_argument("--rulebook-db", default=RULEBOOK_DB)
     r = sub.add_parser("retrieval")
     r.add_argument("--db", default="data/finra.duckdb")
     r.add_argument("--split", default="validation", choices=["validation", "test"])
     a = ap.parse_args()
     if a.cmd == "index":
         build_index(a.rulebook_db, show=a.show)
+    elif a.cmd == "unindexed":
+        unindexed(a.rulebook_db)
     else:
         retrieval(a.db, a.split)
 

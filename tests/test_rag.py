@@ -119,3 +119,9 @@ def test_rule_body_drops_tabs_and_history():
             "07-07 , 08-57 . No Results Found No Results Found")
     assert rag.rule_body(text, "12505. Cooperation of Parties in Discovery") == \
         "The parties must cooperate to the fullest extent practicable in the exchange of documents."
+
+
+def test_unindexed_lists_short_and_series_pages(tmp_path, capsys):
+    left = rag.unindexed(_rulebook(tmp_path))
+    assert sorted(left.rule_no) == ["0110", "3000"]
+    assert "2 of 5 pages have no chunk" in capsys.readouterr().out
