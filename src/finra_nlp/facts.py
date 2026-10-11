@@ -40,12 +40,17 @@ HEADINGS = [  # tried in order; the first found starts the facts
 # (OCR text drops spaces: "imposition ofthe following sanctions")
 # OCR misreads letters too ("conscnt to thc imposition", "iinposition"). A decision's sanctions part opens with a
 # "Sanctions" heading and cites the Sanction Guidelines.
-END_RE = re.compile(r"\bto\s*th[ec]\s*i\w{0,2}position\b|\bf\w{2}lowing\s*sanctions|agrees?\s*to\s*pay\s*the\s*\w*onetary|"
+END_RE = re.compile(r"\bto\s*th[ec]\s*\w{1,3}position\s*of\b|\bf\w{2}lowing\s*sanctions?\b|OTHER\s+FACTORS|"
+                    r"In\s+determining\s+the\s+(?:appropriate\s+)?sanctions?|the\s+sanctions?\s+hereby\s+imposed|agrees?\s*to\s*pay\s*the\s*\w*onetary|"
                     r"CONCLUSIONS?\s+OF\s+LAW|Sanction\s+Guidelines|"
                     r"\b(?:[IVX]+\.\s*)?SANCTIONS\b|\b(?:[IVX]+\.\s*)?Sanctions\s+(?:[A-Z]\.|FINRA|The|In|Enforcement)")
 # with OCR misspellings: "viola?d", "iolated"
 STATED_RE = re.compile(r"\bviolat\w*|\bviola\S{0,3}d\b|\biolat\w*|\bin contravention of\b|"
                        r"\bby reason of th\w forcgoing|\bby reason of the foregoing", re.IGNORECASE)
+# Sentences about the sanction anywhere in the facts (a decision weighing a bar, an appeal restating the fine, the
+# AWC's statutory-disqualification notice) are dropped like violation sentences: the sanction points to the charge.
+SANCTION_RE = re.compile(r"\bsanction|\bfine of\b|barred or suspended from associat|"
+                         r"\bwe (?:suspend|bar|fine|censure|affirm)\b", re.IGNORECASE)
 SUBHEAD_RE = re.compile(r"\(\s*(?:Alleged\s+)?Violations?\s+of\b.{0,300}?\)", re.IGNORECASE)
 # After masking, a sentence that quotes or explains a rule ("[RULE] prohibits registered persons from ...") says
 # which rule was charged as plainly as its number would; a complaint or tip has nothing like it. Such a sentence names
@@ -95,7 +100,7 @@ def facts_section(text: str) -> tuple[str, str]:
         # drop the "B. Respondent also" before the cut
         body = re.sub(r"\s+(?:[A-Z]|[IVX]+)\.$", "", body[: body.rfind(".") + 1] or body)
     body = SUBHEAD_RE.sub(" ", body)
-    body = " ".join(x for x in SENTENCE_RE.split(body) if x and not STATED_RE.search(x))
+    body = " ".join(x for x in SENTENCE_RE.split(body) if x and not STATED_RE.search(x) and not SANCTION_RE.search(x))
     return body.strip()[:MAX_CHARS], kind
 
 

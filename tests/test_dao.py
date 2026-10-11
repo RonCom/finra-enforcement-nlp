@@ -204,3 +204,14 @@ def test_facts_section_ends_at_misread_and_decision_sanctions():
     assert facts_section("FACTS Smith sold. By reason of thc forcgoing, Rcspondem viola?d NASD Rule 2310. Ok then.")[0] \
         == "Smith sold. Ok then."
     assert narrative("Exchange Act § I 7(a) requires broker-dealers to keep records. Smith kept none.") == "Smith kept none."
+
+
+def test_facts_section_drops_sanction_sentences():
+    from finra_nlp.facts import facts_section
+    body = "FACTS AND VIOLATIVE CONDUCT Smith ignored two requests for documents from FINRA staff. "
+    for tail in ("I also consent to the hnposition of the following sanction: a bar.",
+                 "OTHER FACTORS In determining the sanctions in this matter, FINRA considered his discipline.",
+                 "Based on these considerations, the sanctions hereby imposed by the acceptance of the Offer are fair."):
+        assert facts_section(body + tail)[0] == "Smith ignored two requests for documents from FINRA staff."
+    assert facts_section(body + "We review these facts in light of the sanctions. He then left the firm.")[0] == \
+        "Smith ignored two requests for documents from FINRA staff. He then left the firm."
