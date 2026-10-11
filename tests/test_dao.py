@@ -165,3 +165,13 @@ def test_narrative_drops_sentences_about_rules():
     assert narrative(text) == ("This matter originated from a customer complaint. Between 2019 and 2020, Smith placed "
                                "38 trades in two customers' accounts without speaking to them. The customers lost "
                                "$12,000.")
+
+
+def test_narrative_keeps_passing_mentions_and_splits_run_on_sentences():
+    from finra_nlp.facts import narrative
+    from finra_nlp.citations import mask
+    text = mask("FINRA Rule 8210 requires persons to provide information.On March 1, 2019, FINRA sent Smith a request "
+                "under Rule 8210 for documents. The response was due on April 1, 2019. Rule 4511 states that "
+                "\"members shall make and preserve books.\" Smith did not respond.")
+    assert narrative(text) == ("On March 1, 2019, FINRA sent Smith a request under [RULE] for documents. The response "
+                               "was due on April 1, 2019. Smith did not respond.")

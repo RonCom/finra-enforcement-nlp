@@ -13,7 +13,7 @@ before the full run.
 Usage:
     uv run python -m finra_nlp.rulebook terms
     uv run python -m finra_nlp.rulebook terms --accept "read 2026-10-09; non-commercial research allowed"
-    uv run python -m finra_nlp.rulebook download --limit 5
+    uv run python -m finra_nlp.rulebook download --limit 5          # writes data/rulebook.duckdb
     uv run python -m finra_nlp.rulebook download
 """
 
@@ -151,7 +151,7 @@ def main() -> None:
     t.add_argument("--out", default="reports/rulebook_terms.md")
     t.add_argument("--accept", metavar="NOTE", help="record that the terms allow the download, with a note")
     d = sub.add_parser("download")
-    d.add_argument("--db", default="data/finra.duckdb")
+    d.add_argument("--db", default="data/rulebook.duckdb", help="its own file, so it can run beside other jobs")
     d.add_argument("--limit", type=int)
     a = ap.parse_args()
     client = PoliteClient(cache_dir="data/cache/finra")

@@ -3,7 +3,7 @@
 The labels come from the documents' violation sentences, so a model reading the whole document would read the
 answer. This keeps only the narrative of what happened: the text after the FACTS AND VIOLATIVE CONDUCT heading
 (or another facts heading), with "(Violation of ...)" sub-headings removed, cut at the first sentence that states
-a violation. Rule numbers are masked as in the summaries, then every sentence that cites, quotes or explains a
+a violation. Rule numbers are masked as in the summaries, then every sentence that quotes or explains a
 rule is removed (narrative()), so the model reads what happened. Cases whose facts come to under MIN_CHARS characters
 are left out and counted. OCR text is used where the OCR pass read the document.
 
@@ -36,17 +36,28 @@ HEADINGS = [  # tried in order; the first found starts the facts
     ("facts", re.compile(r"\b(?:[IVX]+\.\s*|[A-H]\.\s*)?(?:FACTS|Facts)\b(?=\s+[A-Z])")),
 ]
 SUBHEAD_RE = re.compile(r"\(\s*(?:Alleged\s+)?Violations?\s+of\b.{0,300}?\)", re.IGNORECASE)
-# After masking, sentences that cite or quote a rule ("[RULE] prohibits registered persons from ...") say which
-# rule was charged as plainly as its number would; a complaint or tip has nothing like them. So does guidance
-# (Regulatory Notices, Supplementary Material). The BrokerCheck line is a page footer.
-RULE_TALK_RE = re.compile(r"\[RULE\]|Regulatory Notice|Notice to Members|Supplementary Material|BrokerCheck|"
-                          r"FINRA rules?\b|NASD rules?\b", re.IGNORECASE)
-SENTENCE_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z\"“(\[])")
+# After masking, a sentence that quotes or explains a rule ("[RULE] prohibits registered persons from ...") says
+# which rule was charged as plainly as its number would; a complaint or tip has nothing like it. Such a sentence names
+# a rule ([RULE], "FINRA rules") and either uses a verb of obligation or quotes. A sentence that only mentions a rule
+# ("FINRA sent a request under [RULE]") stays: with the number masked it tells the model no more than the conduct.
+# Guidance (Regulatory Notices, Supplementary Material) goes either way, as does the BrokerCheck page footer.
+RULE_REF_RE = re.compile(r"\[RULE\]|\b(?:FINRA|NASD|MSRB|SEC) rules?\b", re.IGNORECASE)
+EXPLAIN_RE = re.compile(r"\b(?:requires?|required|requiring|provides?|prohibit(?:s|ed)?|states?|mandates?|obligates?|"
+                        r"defines?|imposes?|appl(?:y|ies)|establish(?:es)?|governs?|must|shall|in pertinent part|"
+                        r"is (?:designed|intended)|means)\b|[\"“”]", re.IGNORECASE)
+GUIDANCE_RE = re.compile(r"Regulatory Notice|Notice to Members|Supplementary Material|BrokerCheck", re.IGNORECASE)
+# PDF text often drops the space after a period ("procedures.The firm"), so a lowercase letter, a period and a
+# capital also end a sentence. A closing quote can follow the period.
+SENTENCE_RE = re.compile(r"(?:(?<=[.!?])|(?<=[.!?][\"”]))\s+(?=[A-Z\"“(\[])|(?<=[a-z][.!?])(?=[A-Z])")
+
+
+def rule_talk(sentence: str) -> bool:
+    return bool(GUIDANCE_RE.search(sentence) or (RULE_REF_RE.search(sentence) and EXPLAIN_RE.search(sentence)))
 
 
 def narrative(masked: str) -> str:
-    """The masked facts with every sentence that cites, quotes or explains a rule removed."""
-    return " ".join(x for x in SENTENCE_RE.split(masked) if x and not RULE_TALK_RE.search(x)).strip()
+    """The masked facts with every sentence that quotes or explains a rule removed."""
+    return " ".join(x for x in SENTENCE_RE.split(masked) if x and not rule_talk(x)).strip()
 
 
 def facts_section(text: str) -> tuple[str, str]:
@@ -92,6 +103,7 @@ def build(db: str, client: PoliteClient | None = None, show: int = 0) -> pd.Data
         ocr_urls = dict(con.execute("SELECT case_no, doc_url FROM raw.case_ocr_labels").fetchall())
     except duckdb.CatalogException:
         ocr_urls = {}
+    filtered_out = 0
     rows, dropped = [], {"no document": 0, "no facts heading": 0, f"under {MIN_CHARS} characters": 0}
     for i, r in enumerate(cases.itertuples(index=False), 1):
         text = document_text(client, ocr_urls.get(r.case_no) or r.doc_url)
@@ -102,9 +114,11 @@ def build(db: str, client: PoliteClient | None = None, show: int = 0) -> pd.Data
         if not kind:
             dropped["no facts heading"] += 1
             continue
-        masked = narrative(mask(facts))
+        before = mask(facts)
+        masked = narrative(before)
         if len(masked) < MIN_CHARS:
             dropped[f"under {MIN_CHARS} characters"] += 1
+            filtered_out += len(before) >= MIN_CHARS
             continue
         rows.append({"case_no": r.case_no, "split": r.split, "facts_text": masked, "chars": len(masked), "start": kind})
         if i % 500 == 0:
@@ -116,7 +130,8 @@ def build(db: str, client: PoliteClient | None = None, show: int = 0) -> pd.Data
     con.close()
 
     print(f"\n{len(df)} of {len(cases)} dataset cases have a facts section; left out: "
-          + ", ".join(f"{v} {k}" for k, v in dropped.items()))
+          + ", ".join(f"{v} {k}" for k, v in dropped.items())
+          + f" ({filtered_out} of those were long enough before rule sentences were removed)")
     if len(df):
         print(df.groupby("split").agg(cases=("case_no", "size"), median_chars=("chars", "median")).to_string())
         print(df.start.value_counts().to_string())

@@ -1,0 +1,253 @@
+"""Retrieval over the FINRA Rulebook (spec, "RAG", H3), adapted from the policy-rag pipeline.
+
+`index` splits each downloaded Rulebook page (data/rulebook.duckdb, raw.rulebook_pages) into ~250-word chunks
+that keep their rule number, embeds them with a local Ollama embedding model, and stores them in data/rag.duckdb.
+Three retrievers rank chunks for a query: BM25 (exact words), dense (embeddings) and hybrid (reciprocal rank
+fusion of the two), as in policy-rag.
+
+`retrieval` scores H3 on a split: the query is the masked case summary, and a case is a hit if any FINRA rule the
+case was charged with (NASD rules counted as their FINRA successors; Rule 2010 and procedural rules left out)
+is the rule of one of the top 5 chunks. Cases whose charges include no FINRA rule (only SEC rules, MSRB rules and
+the like, which aren't in the Rulebook) are left out and counted. Validation is for development; the test split
+is scored once under a freeze tag (`retrieval --split test`).
+
+Settings (shell): OLLAMA_URL, RAG_EMBED_MODEL (default nomic-embed-text).
+
+Usage:
+    uv run python -m finra_nlp.rag index
+    uv run python -m finra_nlp.rag retrieval                  # validation split
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+from pathlib import Path
+
+import duckdb
+import httpx
+import numpy as np
+import pandas as pd
+from scipy import sparse
+from sklearn.feature_extraction.text import CountVectorizer
+
+from finra_nlp.dao import procedural
+from finra_nlp.labels import CATCH_ALL, _set, series_label, successor
+
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+EMBED_MODEL = os.environ.get("RAG_EMBED_MODEL", "nomic-embed-text")
+RULEBOOK_DB = "data/rulebook.duckdb"
+RAG_DB = "data/rag.duckdb"
+MAX_WORDS, OVERLAP = 250, 40
+TOP_K = 5
+RETRIEVERS = ["bm25", "dense", "hybrid"]
+STOP = set(("a an and are as at be by for from has have if in into is it its of on or that the their this to was "
+            "were which with not no may can will shall should must any such other").split())
+
+
+# ---- chunks -------------------------------------------------------------------------------------------------
+
+def rule_body(text: str, title: str) -> str:
+    """The rule text of a Rulebook page: from the title's last appearance up to the page footer."""
+    t = re.sub(r"\s+", " ", text)
+    i = t.rfind(title) if title else -1
+    if i >= 0:
+        t = t[i + len(title):]
+    for end in ("Rulebook Search", "Related Topics", "Sign Up for Newsletters", "©"):
+        j = t.find(end)
+        if j > 200:
+            t = t[:j]
+    return t.strip()
+
+
+def split_words(text: str, max_words: int = MAX_WORDS, overlap: int = OVERLAP) -> list[str]:
+    w = text.split()
+    if len(w) <= max_words:
+        return [text]
+    step = max_words - overlap
+    return [" ".join(w[i:i + max_words]) for i in range(0, max(1, len(w) - overlap), step)]
+
+
+def chunk_pages(pages: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for p in pages.itertuples(index=False):
+        body = rule_body(p.text or "", p.title or "")
+        if len(body.split()) < 15:
+            continue
+        for j, piece in enumerate(split_words(body)):
+            rows.append({"rule_no": str(p.rule_no).upper(), "title": p.title, "url": p.url, "part": j,
+                         "text": piece})
+    df = pd.DataFrame(rows, columns=["rule_no", "title", "url", "part", "text"])
+    df.insert(0, "chunk_id", range(len(df)))
+    return df
+
+
+# ---- models -------------------------------------------------------------------------------------------------
+
+class Ollama:
+    def __init__(self, url: str = OLLAMA_URL, model: str = EMBED_MODEL, client: httpx.Client | None = None):
+        self.url, self.model, self.client = url.rstrip("/"), model, client or httpx.Client(timeout=600)
+
+    def embed(self, texts: list[str], kind: str) -> np.ndarray:
+        # nomic-embed-text expects task prefixes; other embedding models ignore them
+        prefix = {"query": "search_query: ", "document": "search_document: "}.get(kind, "") \
+            if "nomic" in self.model else ""
+        out = []
+        for i in range(0, len(texts), 32):
+            r = self.client.post(f"{self.url}/api/embed", json={"model": self.model,
+                                                                "input": [prefix + t for t in texts[i:i + 32]]})
+            r.raise_for_status()
+            out.extend(r.json()["embeddings"])
+        v = np.asarray(out, dtype=np.float32)
+        return v / np.linalg.norm(v, axis=1, keepdims=True)
+
+
+def build_index(rulebook_db: str = RULEBOOK_DB, rag_db: str = RAG_DB, embedder=None) -> pd.DataFrame:
+    con = duckdb.connect(rulebook_db, read_only=True)
+    pages = con.execute("SELECT rule_no, title, url, text FROM raw.rulebook_pages").df()
+    con.close()
+    df = chunk_pages(pages)
+    emb = (embedder or Ollama()).embed((df["title"] + ". " + df["text"]).tolist(), "document")
+    df["embedding"] = list(emb)
+    Path(rag_db).parent.mkdir(parents=True, exist_ok=True)
+    con = duckdb.connect(rag_db)
+    con.register("df", df)
+    con.execute("CREATE OR REPLACE TABLE chunks AS SELECT * FROM df")
+    con.close()
+    print(f"{len(df)} chunks from {df.rule_no.nunique()} rules ({len(pages)} pages) in {rag_db}; median "
+          f"{int(df.text.str.split().str.len().median())} words per chunk")
+    return df
+
+
+# ---- retrieval ----------------------------------------------------------------------------------------------
+
+class BM25:
+    """Okapi BM25 as one sparse matrix, so a query scores every chunk in one product."""
+
+    def __init__(self, docs: list[str], k1: float = 1.2, b: float = 0.75):
+        self.vec = CountVectorizer(token_pattern=r"[a-z0-9]+(?:[.-][a-z0-9]+)*", lowercase=True,
+                                   stop_words=list(STOP))
+        tf = self.vec.fit_transform(docs).tocsr().astype(np.float32)
+        n = tf.shape[0]
+        dl = np.asarray(tf.sum(axis=1)).ravel()
+        df = np.asarray((tf > 0).sum(axis=0)).ravel()
+        idf = np.log(1 + (n - df + 0.5) / (df + 0.5)).astype(np.float32)
+        norm = k1 * (1 - b + b * dl / dl.mean())
+        tf = tf.tocoo()
+        w = tf.data * (k1 + 1) / (tf.data + norm[tf.row]) * idf[tf.col]
+        self.w = sparse.csr_matrix((w, (tf.row, tf.col)), shape=tf.shape)
+
+    def scores(self, query: str) -> np.ndarray:
+        q = (self.vec.transform([query]) > 0).astype(np.float32).T
+        return (self.w @ q).toarray().ravel()
+
+
+class Index:
+    def __init__(self, rag_db: str = RAG_DB, embedder=None):
+        con = duckdb.connect(rag_db, read_only=True)
+        self.chunks = con.execute("SELECT chunk_id, rule_no, title, url, part, text FROM chunks ORDER BY chunk_id").df()
+        emb = con.execute("SELECT embedding FROM chunks ORDER BY chunk_id").fetchnumpy()["embedding"]
+        con.close()
+        self.emb = np.stack([np.asarray(e, np.float32) for e in emb])
+        self.bm25 = BM25((self.chunks["title"] + " " + self.chunks["text"]).tolist())
+        self.embedder = embedder or Ollama()
+
+    def scores(self, query: str, method: str, qvec: np.ndarray | None = None) -> np.ndarray:
+        if method == "bm25":
+            return self.bm25.scores(query)
+        qv = qvec if qvec is not None else self.embedder.embed([query], "query")[0]
+        if method == "dense":
+            return self.emb @ qv
+        if method == "hybrid":  # reciprocal rank fusion, k = 60
+            s = np.zeros(len(self.chunks))
+            for part in (self.bm25.scores(query), self.emb @ qv):
+                order = np.argsort(-part, kind="stable")
+                s[order] += 1.0 / (60 + np.arange(1, len(order) + 1))
+            return s
+        raise ValueError(method)
+
+    def rank(self, query: str, method: str = "hybrid", k: int = TOP_K, qvec=None) -> pd.DataFrame:
+        s = self.scores(query, method, qvec)
+        top = np.argsort(-s, kind="stable")[:k]
+        return self.chunks.iloc[top].assign(score=s[top], rank=np.arange(1, len(top) + 1))
+
+
+def finra_rules(rules: str) -> set[str]:
+    """Rule numbers a case was charged with that the Rulebook holds: FINRA rules and NASD rules' successors,
+    without Rule 2010 and procedural rules."""
+    out = set()
+    for k in _set(rules):
+        k = successor(k)
+        if k.startswith("FINRA:") and k != CATCH_ALL and not procedural(k):
+            out.add(k.split(":", 1)[1].upper())
+    return out
+
+
+def retrieval(db: str, split: str = "validation", rag_db: str = RAG_DB, out: str | None = None, index=None,
+              check=None) -> pd.DataFrame:
+    if split == "test":
+        from finra_nlp.testrun import frozen
+        (check or frozen)(out or "reports/retrieval_test.md")
+    con = duckdb.connect(db, read_only=True)
+    cases = con.execute("SELECT case_no, masked_text, rules FROM model.dataset WHERE split = ? ORDER BY case_no",
+                        [split]).df()
+    con.close()
+    cases["gold"] = cases.rules.map(finra_rules)
+    scored = cases[cases.gold.map(bool)].reset_index(drop=True)
+    idx = index or Index(rag_db)
+    in_book = set(idx.chunks.rule_no)
+    qvecs = idx.embedder.embed(scored.masked_text.fillna("").tolist(), "query")
+    rows = []
+    for i, r in enumerate(scored.itertuples(index=False)):
+        row = {"case_no": r.case_no, "words": len((r.masked_text or "").split()),
+               "series": sorted({series_label("FINRA:" + g) for g in r.gold}),
+               "gold_in_book": bool(r.gold & in_book)}
+        for m in RETRIEVERS:
+            hits = idx.rank(r.masked_text or "", m, TOP_K, qvecs[i])
+            ranks = [k + 1 for k, rule in enumerate(hits.rule_no) if rule in r.gold]
+            row[f"{m}_hit"] = bool(ranks)
+            row[f"{m}_rr"] = 1.0 / ranks[0] if ranks else 0.0
+        rows.append(row)
+    res = pd.DataFrame(rows)
+    lines = [f"# Retrieval (H3), {split} split", "",
+             f"{len(cases)} cases; {len(scored)} charged at least one FINRA Rulebook rule other than 2010 and are scored "
+             f"({len(cases) - len(scored)} charged only SEC, MSRB or other rules and are left out). "
+             f"{int((~res.gold_in_book).sum()) if len(res) else 0} scored cases have no charged rule among the "
+             f"{len(in_book)} rules indexed. Query: the masked summary. Hit: a charged rule is the rule of a top-{TOP_K} chunk.",
+             "", "| Retriever | Hit rate, top 5 | MRR |", "| --- | --- | --- |"]
+    for m in RETRIEVERS:
+        lines.append(f"| {m} | {res[f'{m}_hit'].mean():.3f} | {res[f'{m}_rr'].mean():.3f} |")
+    if len(res):
+        # thirds by summary length; ranking first keeps three bins when many summaries share a length
+        res["length"] = pd.qcut(res.words.rank(method="first"), min(3, len(res)),
+                                labels=["short", "medium", "long"][:min(3, len(res))])
+        by_len = res.groupby("length", observed=True).agg(cases=("case_no", "size"),
+                                                          hybrid_hit=("hybrid_hit", "mean"))
+        ser = res.explode("series").groupby("series").agg(cases=("case_no", "size"), hybrid_hit=("hybrid_hit", "mean"))
+        lines += ["", "## Hybrid hit rate by summary length", "", by_len.round(3).to_markdown(), "",
+                  "## Hybrid hit rate by charged series", "", ser.round(3).to_markdown(), ""]
+    path = out or f"reports/retrieval_{split}.md"
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text("\n".join(lines), encoding="utf-8")
+    print("\n".join(lines))
+    return res
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    i = sub.add_parser("index")
+    i.add_argument("--rulebook-db", default=RULEBOOK_DB)
+    r = sub.add_parser("retrieval")
+    r.add_argument("--db", default="data/finra.duckdb")
+    r.add_argument("--split", default="validation", choices=["validation", "test"])
+    a = ap.parse_args()
+    if a.cmd == "index":
+        build_index(a.rulebook_db)
+    else:
+        retrieval(a.db, a.split)
+
+
+if __name__ == "__main__":
+    main()
