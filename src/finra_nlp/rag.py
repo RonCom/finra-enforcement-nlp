@@ -48,16 +48,27 @@ STOP = set(("a an and are as at be by for from has have if in into is it its of 
 
 # ---- chunks -------------------------------------------------------------------------------------------------
 
+# The rule page's tab labels come first, then the rule, then its amendment history ("Amended by SR-FINRA-2008-021
+# eff. ...", "Selected Notice: 07-07") and the empty tabs ("No Results Found")
+TABS_RE = re.compile(r"^(?:The Rule\s+)?(?:Notices\s+)?(?:Guidance\s+)?(?:News Releases\s+)?(?:FAQs\s+)?")
+HISTORY_RE = re.compile(r"\s(?:(?:Amended|Adopted|Redesignated|Renumbered|Approved)(?: and \w+)? by SR-|"
+                        r"Selected Notices?:|No Results Found)")
+
+
 def rule_body(text: str, title: str) -> str:
-    """The rule text of a Rulebook page: from the title's last appearance up to the page footer."""
+    """The rule text of a Rulebook page: from the title's last appearance up to the amendment history or footer."""
     t = re.sub(r"\s+", " ", text)
     i = t.rfind(title) if title else -1
     if i >= 0:
         t = t[i + len(title):]
+    t = TABS_RE.sub("", t.strip())
     for end in ("Rulebook Search", "Related Topics", "Sign Up for Newsletters", "©"):
         j = t.find(end)
         if j > 200:
             t = t[:j]
+    h = HISTORY_RE.search(t)
+    if h and h.start() > 0:
+        t = t[:h.start()]
     return t.strip()
 
 

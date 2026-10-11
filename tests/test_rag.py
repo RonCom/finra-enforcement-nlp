@@ -110,3 +110,12 @@ def test_test_split_requires_freeze(tmp_path):
     rag.retrieval(_dataset(tmp_path), "test", rdb, str(tmp_path / "t.md"), rag.Index(rdb, FakeEmbedder()),
                   check=called.append)
     assert called == [str(tmp_path / "t.md")]
+
+
+def test_rule_body_drops_tabs_and_history():
+    text = ("Menu 12505. Cooperation of Parties in Discovery The Rule Notices Guidance News Releases FAQs The parties "
+            "must cooperate to the fullest extent practicable in the exchange of documents. Amended by "
+            "SR-FINRA-2008-021 eff. Dec. 15, 2008. Adopted by SR-NASD-2003-158 eff. April 16, 2007. Selected Notice: "
+            "07-07 , 08-57 . No Results Found No Results Found")
+    assert rag.rule_body(text, "12505. Cooperation of Parties in Discovery") == \
+        "The parties must cooperate to the fullest extent practicable in the exchange of documents."
