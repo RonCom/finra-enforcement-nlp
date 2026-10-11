@@ -203,6 +203,16 @@ def base_rule(rule_no: str) -> str:
     return str(rule_no).upper().split(".")[0]
 
 
+PARTS = ["conduct rules (0100-8000)", "Code of Procedure (9000)", "Uniform Practice Code (11000)",
+         "arbitration and mediation codes (12000-14000)"]
+
+
+def rulebook_part(rule_no: str) -> str:
+    m = re.match(r"(?:IM-)?(\d+)", str(rule_no))
+    n = int(m.group(1)) if m else 0
+    return PARTS[0] if n < 9000 else PARTS[1] if n < 10000 else PARTS[2] if n < 12000 else PARTS[3]
+
+
 def finra_rules(rules: str) -> set[str]:
     """Rule numbers a case was charged with that the Rulebook holds: FINRA rules and NASD rules' successors,
     without Rule 2010 and procedural rules."""
@@ -238,6 +248,7 @@ def retrieval(db: str, split: str = "validation", rag_db: str = RAG_DB, out: str
             ranks = [k + 1 for k, rule in enumerate(hits.rule_no) if base_rule(rule) in r.gold]
             row[f"{m}_hit"] = bool(ranks)
             row[f"{m}_rr"] = 1.0 / ranks[0] if ranks else 0.0
+            row[f"{m}_top"] = [base_rule(x) for x in hits.rule_no]
         rows.append(row)
     res = pd.DataFrame(rows)
     lines = [f"# Retrieval (H3), {split} split", "",
@@ -257,6 +268,16 @@ def retrieval(db: str, split: str = "validation", rag_db: str = RAG_DB, out: str
         ser = res.explode("series").groupby("series").agg(cases=("case_no", "size"), hybrid_hit=("hybrid_hit", "mean"))
         lines += ["", "## Hybrid hit rate by summary length", "", by_len.round(3).to_markdown(), "",
                   "## Hybrid hit rate by charged series", "", ser.round(3).to_markdown(), ""]
+        lines += ["## What fills the top 5", "", "Share of all top-5 slots by part of the Rulebook:", "",
+                  "| Part | " + " | ".join(RETRIEVERS) + " |", "| --- |" + " --- |" * len(RETRIEVERS)]
+        parts = {m: res[f"{m}_top"].explode().map(rulebook_part).value_counts(normalize=True) for m in RETRIEVERS}
+        for part in PARTS:
+            lines.append(f"| {part} | " + " | ".join(f"{parts[m].get(part, 0):.3f}" for m in RETRIEVERS) + " |")
+        lines += ["", "Rules retrieved most often (share of scored cases with the rule in their top 5):", ""]
+        for m in RETRIEVERS:
+            top = res[f"{m}_top"].map(set).explode().value_counts().head(10) / len(res)
+            lines.append(f"- **{m}:** " + ", ".join(f"{r} {v:.0%}" for r, v in top.items()))
+        lines.append("")
     path = out or f"reports/retrieval_{split}.md"
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text("\n".join(lines), encoding="utf-8")

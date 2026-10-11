@@ -131,3 +131,8 @@ def test_one_sentence_rules_are_indexed_and_deleted_ones_not():
     pages = pd.DataFrame([_page("12605", "12605. Witness Oath", "All witnesses must testify under oath or affirmation."),
                           _page("11830", "11830. Reserved.", "Deleted by SR-FINRA-2010-060 eff. Dec. 15, 2010.")])
     assert list(rag.chunk_pages(pages).rule_no) == ["12605"]
+
+
+def test_rulebook_part():
+    assert [rag.rulebook_part(r) for r in ("3110", "IM-2110-2", "9552", "11510", "13802")] == [
+        rag.PARTS[0], rag.PARTS[0], rag.PARTS[1], rag.PARTS[2], rag.PARTS[3]]
