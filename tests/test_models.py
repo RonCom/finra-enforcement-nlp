@@ -285,3 +285,21 @@ def test_h6_compares_facts_and_summary_models(tmp_path):
     res = testrun.score_h6(db, str(tmp_path / "h6.md"), check=lambda o: "freeze-test", facts_probs=facts_probs)
     assert res["facts"] > res["summary"] and res["gain"] > 0
     assert "H6" in (tmp_path / "h6.md").read_text()
+
+
+def test_download_stops_when_finra_keeps_refusing(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / rulebook.ACCEPTED).write_text("ok")
+    links = b"".join(b'<a href="/rules-guidance/rulebooks/finra-rules/%d">x</a>' % n for n in range(3110, 3120))
+
+    class Refusing:
+        calls = 0
+
+        def get(self, url, use_cache=True):
+            Refusing.calls += 1
+            return (200, links) if url == rulebook.INDEX_URL else (429, b"")
+
+    with pytest.raises(SystemExit, match="refused 3 pages"):
+        rulebook.download(Refusing(), "f.duckdb", None)
+    assert Refusing.calls == 1 + rulebook.MAX_REFUSED

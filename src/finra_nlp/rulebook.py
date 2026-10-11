@@ -14,7 +14,7 @@ Usage:
     uv run python -m finra_nlp.rulebook terms
     uv run python -m finra_nlp.rulebook terms --accept "read 2026-10-09; non-commercial research allowed"
     uv run python -m finra_nlp.rulebook download --limit 5          # writes data/rulebook.duckdb
-    uv run python -m finra_nlp.rulebook download
+    uv run python -m finra_nlp.rulebook download    # resumes from the page cache if stopped
 """
 
 from __future__ import annotations
@@ -41,6 +41,7 @@ ACCEPTED = "data/rulebook_terms_accepted.txt"
 TERMS_WORDS = re.compile(
     r"cop(?:y|ies|ying)|download|reproduc|redistribut|automat|robot|spider|scrap|crawl|"
     r"commercial|personal use|permission|license|framing|data mining", re.I)
+MAX_REFUSED = 3  # pages still refused after all retries; past this, stop instead of asking for every page
 RULE_LINK_RE = re.compile(r"/rules-guidance/rulebooks/finra-rules/(\d{4,5}(?:\.\d{2})?|IM-\d{4}-\d+)/?$", re.I)
 
 
@@ -119,13 +120,20 @@ def download(client: PoliteClient, db: str, limit: int | None) -> pd.DataFrame:
     status, index = client.get(INDEX_URL)
     if status != 200:
         raise SystemExit(f"Rulebook index returned {status}")
-    queue, seen, rows = rule_links(index, INDEX_URL), set(), []
+    queue, seen, rows, refused = rule_links(index, INDEX_URL), set(), [], 0
     while queue and (limit is None or len(rows) < limit):
         url = queue.pop(0)
         if url in seen:
             continue
         seen.add(url)
         s, body = client.get(url)
+        if s == 429:
+            refused += 1
+            if refused >= MAX_REFUSED:
+                raise SystemExit(f"finra.org refused {refused} pages in a row after waiting (429). Pages fetched so "
+                                 "far are cached; wait an hour or more, then run download again to resume.")
+            continue
+        refused = 0
         if s != 200:
             print(f"  skip {s}: {url}")
             continue
@@ -154,7 +162,10 @@ def main() -> None:
     d.add_argument("--db", default="data/rulebook.duckdb", help="its own file, so it can run beside other jobs")
     d.add_argument("--limit", type=int)
     a = ap.parse_args()
-    client = PoliteClient(cache_dir="data/cache/finra")
+    # one page every 3 s; a 429 waits 30 s, then 60 s, ... before retrying and slows the pace to one per 10 s,
+    # which only speeds back up after 300 pages in a row (the DAO search page's settings, slower)
+    client = PoliteClient(cache_dir="data/cache/finra", max_per_second=1 / 3, max_retries=5, retry_wait=30.0,
+                          max_interval=10.0, recover_after=300, log=lambda m: print(f"  {m}", flush=True))
     if a.cmd == "terms" and a.accept:
         Path(ACCEPTED).parent.mkdir(parents=True, exist_ok=True)
         Path(ACCEPTED).write_text(f"{date.today()}: {a.accept}\n", encoding="utf-8")
