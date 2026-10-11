@@ -147,3 +147,19 @@ def test_query_text_keeps_conduct_only():
     assert rag.query_text(s) == ("it failed to supervise a representative's outside business. "
                                  "The findings stated that the firm did not review his emails.")
     assert rag.query_text("Only a fine of $5,000.") == "Only a fine of $5,000."
+
+
+def test_rank_gives_one_chunk_per_rule(tmp_path):
+    long_rule = _page("8312", "8312. FINRA BrokerCheck Disclosure", "disclosure of disciplinary actions on BrokerCheck " * 120)
+    pages = pd.DataFrame(PAGES[:2] + [long_rule])
+    rb = str(tmp_path / "rb.duckdb")
+    con = duckdb.connect(rb)
+    con.execute("CREATE SCHEMA raw")
+    con.register("df", pages)
+    con.execute("CREATE TABLE raw.rulebook_pages AS SELECT * FROM df")
+    con.close()
+    rdb = str(tmp_path / "rag.duckdb")
+    chunks = rag.build_index(rb, rdb, FakeEmbedder())
+    assert (chunks.rule_no == "8312").sum() > 2
+    top = rag.Index(rdb, FakeEmbedder()).rank("BrokerCheck disclosure of disciplinary actions", "bm25", 3)
+    assert sorted(top.rule_no) == ["3110", "8210", "8312"]

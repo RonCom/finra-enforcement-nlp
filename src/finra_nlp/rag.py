@@ -193,8 +193,19 @@ class Index:
         raise ValueError(method)
 
     def rank(self, query: str, method: str = "hybrid", k: int = TOP_K, qvec=None) -> pd.DataFrame:
+        """The top k chunks from k different rules: each rule is represented by its best-scoring chunk, so one long
+        rule can't fill the list."""
         s = self.scores(query, method, qvec)
-        top = np.argsort(-s, kind="stable")[:k]
+        order = np.argsort(-s, kind="stable")
+        rules = self.chunks.rule_no.map(base_rule).to_numpy()
+        top, seen = [], set()
+        for j in order:
+            if rules[j] not in seen:
+                seen.add(rules[j])
+                top.append(j)
+                if len(top) == k:
+                    break
+        top = np.array(top, dtype=int)
         return self.chunks.iloc[top].assign(score=s[top], rank=np.arange(1, len(top) + 1))
 
 
@@ -276,11 +287,14 @@ def retrieval(db: str, split: str = "validation", rag_db: str = RAG_DB, out: str
             row[f"{m}_top"] = [base_rule(x) for x in hits.rule_no]
         rows.append(row)
     res = pd.DataFrame(rows)
+    gold_parts = scored.gold.explode().map(rulebook_part).value_counts()
     lines = [f"# Retrieval (H3), {split} split", "",
              f"{len(cases)} cases; {len(scored)} charged at least one FINRA Rulebook rule other than 2010 and are scored "
              f"({len(cases) - len(scored)} charged only SEC, MSRB or other rules and are left out). "
              f"{int((~res.gold_in_book).sum()) if len(res) else 0} scored cases have no charged rule among the "
-             f"{len(in_book)} rules indexed. Query: the masked summary without its sanction and procedure sentences. Hit: a charged rule is the rule of a top-{TOP_K} chunk.",
+             f"{len(in_book)} rules indexed. Query: the masked summary without its sanction and procedure sentences. Hit: a charged rule is among the top {TOP_K} rules (each rule by its best chunk).",
+             "", "Charged rules by part of the Rulebook: " + ", ".join(f"{p} {int(gold_parts.get(p, 0))}" for p in PARTS)
+             + ".",
              "", "| Retriever | Hit rate, top 5 | MRR |", "| --- | --- | --- |"]
     for m in RETRIEVERS:
         lines.append(f"| {m} | {res[f'{m}_hit'].mean():.3f} | {res[f'{m}_rr'].mean():.3f} |")
