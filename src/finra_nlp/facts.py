@@ -3,7 +3,8 @@
 The labels come from the documents' violation sentences, so a model reading the whole document would read the
 answer. This keeps only the narrative of what happened: the text after the FACTS AND VIOLATIVE CONDUCT heading
 (or another facts heading), with "(Violation of ...)" sub-headings removed, cut at the first sentence that states
-a violation. Rule numbers are masked as in the summaries. Cases whose facts come to under MIN_CHARS characters
+a violation. Rule numbers are masked as in the summaries, then every sentence that cites, quotes or explains a
+rule is removed (narrative()), so the model reads what happened. Cases whose facts come to under MIN_CHARS characters
 are left out and counted. OCR text is used where the OCR pass read the document.
 
 Writes model.facts (case_no, split, facts_text, chars, start). Reads cached documents only.
@@ -35,6 +36,17 @@ HEADINGS = [  # tried in order; the first found starts the facts
     ("facts", re.compile(r"\b(?:[IVX]+\.\s*|[A-H]\.\s*)?(?:FACTS|Facts)\b(?=\s+[A-Z])")),
 ]
 SUBHEAD_RE = re.compile(r"\(\s*(?:Alleged\s+)?Violations?\s+of\b.{0,300}?\)", re.IGNORECASE)
+# After masking, sentences that cite or quote a rule ("[RULE] prohibits registered persons from ...") say which
+# rule was charged as plainly as its number would; a complaint or tip has nothing like them. So does guidance
+# (Regulatory Notices, Supplementary Material). The BrokerCheck line is a page footer.
+RULE_TALK_RE = re.compile(r"\[RULE\]|Regulatory Notice|Notice to Members|Supplementary Material|BrokerCheck|"
+                          r"FINRA rules?\b|NASD rules?\b", re.IGNORECASE)
+SENTENCE_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z\"“(\[])")
+
+
+def narrative(masked: str) -> str:
+    """The masked facts with every sentence that cites, quotes or explains a rule removed."""
+    return " ".join(x for x in SENTENCE_RE.split(masked) if x and not RULE_TALK_RE.search(x)).strip()
 
 
 def facts_section(text: str) -> tuple[str, str]:
@@ -90,7 +102,7 @@ def build(db: str, client: PoliteClient | None = None, show: int = 0) -> pd.Data
         if not kind:
             dropped["no facts heading"] += 1
             continue
-        masked = mask(facts)
+        masked = narrative(mask(facts))
         if len(masked) < MIN_CHARS:
             dropped[f"under {MIN_CHARS} characters"] += 1
             continue

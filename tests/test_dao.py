@@ -152,3 +152,16 @@ def test_facts_section_stops_before_the_first_violation_sentence():
 def test_document_text_without_a_link():
     from finra_nlp.facts import document_text
     assert document_text(None, float("nan")) == "" and document_text(None, None) == ""
+
+
+def test_narrative_drops_sentences_about_rules():
+    from finra_nlp.facts import narrative
+    from finra_nlp.citations import mask
+    text = mask("This matter originated from a customer complaint. FINRA Rule 3260(b) and NASD Rule 2510(b) "
+                "prohibit registered representatives from exercising discretion without written authorization. "
+                "Regulatory Notice 10-22 reminds firms of their obligations. Between 2019 and 2020, Smith placed "
+                "38 trades in two customers' accounts without speaking to them. For more information about the "
+                "respondent, visit BrokerCheck. The customers lost $12,000.")
+    assert narrative(text) == ("This matter originated from a customer complaint. Between 2019 and 2020, Smith placed "
+                               "38 trades in two customers' accounts without speaking to them. The customers lost "
+                               "$12,000.")
