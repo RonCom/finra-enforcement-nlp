@@ -4,6 +4,7 @@ Two steps, both refused unless HEAD carries a freeze-* tag and tracked files are
 
     uv run python -m finra_nlp.testrun zeroshot --workers 2   # the local model answers the test cases (resumes)
     uv run python -m finra_nlp.testrun score                  # baseline, fine-tuned average, zero-shot; once
+    uv run python -m finra_nlp.testrun h6                     # facts-section model vs. summary model (H6); once
 
 The zero-shot prompt used is the one with the higher validation macro-F1 over series with 10+ cases; both
 prompts must have answered every validation case. Progress lines don't show test labels. `score` fits the
@@ -153,6 +154,67 @@ def score_test(db: str, out: str = REPORT, model: str = zeroshot.MODEL, check=fr
     return {"h1": h1, "h2": h2, **{n: r for n, r in results.items()}}
 
 
+H6_REPORT = "reports/h6_results.md"
+H6_GAIN = 0.03   # facts-section model minus summary model, macro-F1 on the sample
+H6_N = 300
+FACTS_DIRS = ["data/models/facts", "data/models/facts_seed1", "data/models/facts_seed2"]
+
+
+def _bootstrap_diff(y, a, b, n: int = 2000, seed: int = 0) -> tuple[float, float, float]:
+    """Paired bootstrap of macro-F1(b) - macro-F1(a) over cases: 2.5th and 97.5th percentiles, share above 0."""
+    from sklearn.metrics import f1_score
+    rng = np.random.default_rng(seed)
+    pa, pb = (a >= baseline.THRESHOLD).astype(int), (b >= baseline.THRESHOLD).astype(int)
+    d = []
+    for _ in range(n):
+        i = rng.integers(0, len(y), len(y))
+        d.append(f1_score(y[i], pb[i], average="macro", zero_division=0)
+                 - f1_score(y[i], pa[i], average="macro", zero_division=0))
+    d = np.array(d)
+    return float(np.percentile(d, 2.5)), float(np.percentile(d, 97.5)), float((d > 0).mean())
+
+
+def score_h6(db: str, out: str = H6_REPORT, check=frozen, facts_probs=None) -> dict:
+    """H6: the fine-tuned model reading facts sections vs. the one reading summaries, on 300 test cases with a
+    facts section (fixed random sample). Summary predictions are the stored ones from `score`."""
+    freeze = check(out)
+    con = duckdb.connect(db, read_only=True)
+    pool = [r[0] for r in con.execute("SELECT case_no FROM model.facts WHERE split = 'test' ORDER BY case_no").fetchall()]
+    stored = con.execute("SELECT * FROM model.test_predictions").df()
+    con.close()
+    rng = np.random.default_rng(6)
+    sample = sorted(rng.choice(pool, size=min(H6_N, len(pool)), replace=False).tolist())
+    classes = [c.split(":", 1)[1] for c in stored.columns if c.startswith("finetune:")]
+    stored = stored.set_index("case_no").loc[sample]
+    summ = stored[[f"finetune:{c}" for c in classes]].to_numpy()
+    f_classes, f_cases, _, facts = (facts_probs or finetune.ensemble_probs)(
+        db, "test", FACTS_DIRS, 1024, 8, source="facts", case_nos=sample)
+    if f_classes != classes or f_cases.case_no.tolist() != sample:
+        raise SystemExit("The facts models were trained on different series, or the sample cases don't line up")
+    y = np.array([[int(c in _labels(s)) for c in classes] for s in stored["labels"]])
+    per_s, macro_s = score(classes, y, summ)
+    per_f, macro_f = score(classes, y, facts)
+    gain = macro_f - macro_s
+    lo, hi, pos = _bootstrap_diff(y, summ, facts)
+    lines = [
+        "# H6: facts section vs. monthly summary as input (test split)", "",
+        f"Code: {freeze}. {len(sample)} test cases with a facts section, drawn at random (seed 6) from {len(pool)}. "
+        "Both models are ModernBERT-base, fine-tuned the same way, average of 3 seeds; one read summaries "
+        "(stored predictions from the test run), one read facts sections (max 1,024 tokens). Threshold 0.5.", "",
+        "| Input | Macro-F1, all series | Macro-F1, series with 10+ cases in the sample |", "| --- | --- | --- |",
+        f"| Monthly summary | {macro_s:.3f} | {macro_supported(per_s, MIN_TEST)[0]:.3f} |",
+        f"| Facts section | {macro_f:.3f} | {macro_supported(per_f, MIN_TEST)[0]:.3f} |", "",
+        "| ID | Test | Expectation | Result | Verdict |", "| --- | --- | --- | --- | --- |",
+        f"| H6 | Facts section vs. summary, macro-F1 | Gain >= {H6_GAIN} | {gain:+.3f} (95% interval {lo:+.3f} to "
+        f"{hi:+.3f}, {pos:.0%} of resamples above 0) | {'Met' if gain >= H6_GAIN else 'Failed: summaries are enough for triage'} |",
+        "", "## Summary input", "", per_s.round(3).to_markdown(), "", "## Facts input", "", per_f.round(3).to_markdown(), "",
+    ]
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    Path(out).write_text("\n".join(lines), encoding="utf-8")
+    print("\n".join(lines))
+    return {"summary": macro_s, "facts": macro_f, "gain": gain}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -161,9 +223,13 @@ def main() -> None:
     z.add_argument("--workers", type=int, default=1)
     s = sub.add_parser("score")
     s.add_argument("--db", default="data/finra.duckdb")
+    h = sub.add_parser("h6")
+    h.add_argument("--db", default="data/finra.duckdb")
     a = ap.parse_args()
     if a.cmd == "zeroshot":
         answer_test(a.db, a.workers)
+    elif a.cmd == "h6":
+        score_h6(a.db)
     else:
         score_test(a.db)
 

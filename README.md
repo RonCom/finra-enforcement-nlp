@@ -71,6 +71,18 @@ ollama stop gemma4:26b
 uv run python -m finra_nlp.testrun score                  # reports/test_results.md, H1 and H2
 ```
 
+## H6: facts section vs. summary
+
+```powershell
+uv run python -m finra_nlp.facts --show 5                 # model.facts: facts sections, masked; read a few
+uv run python -m finra_nlp.finetune --source facts --micro 4
+uv run python -m finra_nlp.finetune --source facts --micro 4 --seed 1
+uv run python -m finra_nlp.finetune --source facts --micro 4 --seed 2
+git tag freeze-3
+git push origin freeze-3
+uv run python -m finra_nlp.testrun h6                     # reports/h6_results.md, once
+```
+
 ## Rulebook
 
 ```powershell

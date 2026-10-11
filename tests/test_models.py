@@ -258,3 +258,30 @@ def test_frozen_test_run(tmp_path, monkeypatch):
     text = out.read_text()
     assert "H1" in text and "H2" in text and "freeze-test" in text
     assert res["Fine-tuned (average of 3 seeds)"]["macro_f1"] >= res["TF-IDF baseline"]["macro_f1"] - 1e-9
+
+
+def test_h6_compares_facts_and_summary_models(tmp_path):
+    from finra_nlp import testrun
+    db = _db(tmp_path, _cases() + [(f"t{i}", "2025-03-01", "2025-04", "x", "FINRA:3110|FINRA:2010" if i % 2
+                                    else "FINRA:2111|FINRA:2010") for i in range(20)])
+    dataset.build(db)
+    con = duckdb.connect(db)
+    test = con.execute("SELECT case_no, labels FROM model.dataset WHERE split = 'test' ORDER BY case_no").df()
+    classes = ["FINRA:2000", "FINRA:3000", "other"]
+    truth = np.array([[float(k in s.split("|")) for k in classes] for s in test["labels"]])
+    pred = pd.DataFrame({"case_no": test.case_no, "labels": test["labels"]})
+    for j, c in enumerate(classes):
+        pred[f"finetune:{c}"] = np.where(np.arange(len(test)) % 3 == 0, 1 - truth[:, j], truth[:, j])  # some errors
+    con.register("p", pred)
+    con.execute("CREATE TABLE model.test_predictions AS SELECT * FROM p")
+    con.register("f", pd.DataFrame({"case_no": test.case_no, "split": "test", "facts_text": "facts", "chars": 400,
+                                    "start": "facts"}))
+    con.execute("CREATE TABLE model.facts AS SELECT * FROM f")
+    con.close()
+
+    def facts_probs(db, split, dirs, max_len, batch, source, case_nos):
+        rows = test[test.case_no.isin(case_nos)].reset_index(drop=True)
+        return classes, rows, [], np.array([[float(k in s.split("|")) for k in classes] for s in rows["labels"]])
+    res = testrun.score_h6(db, str(tmp_path / "h6.md"), check=lambda o: "freeze-test", facts_probs=facts_probs)
+    assert res["facts"] > res["summary"] and res["gain"] > 0
+    assert "H6" in (tmp_path / "h6.md").read_text()

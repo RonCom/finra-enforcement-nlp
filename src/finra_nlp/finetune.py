@@ -17,6 +17,7 @@ Usage:
     uv run python -m finra_nlp.finetune --epochs 1 --limit-train 200   # check memory and speed first
     uv run python -m finra_nlp.finetune                                # seed 0; --seed 1, --seed 2 for the spread
     uv run python -m finra_nlp.finetune --ensemble                     # average of the three saved seeds
+    uv run python -m finra_nlp.finetune --source facts --micro 4       # H6: facts sections, 1,024 tokens
 """
 
 from __future__ import annotations
@@ -35,6 +36,12 @@ import pandas as pd
 from finra_nlp.baseline import MIN_SUPPORT, _labels, macro_supported, score
 
 DEFAULT_MODEL = "answerdotai/ModernBERT-base"
+# What the model reads: the monthly summary, or the facts section of the case document (finra_nlp.facts, H6)
+SOURCES = {
+    "summary": "SELECT case_no, split, masked_text, labels FROM model.dataset",
+    "facts": "SELECT d.case_no, d.split, f.facts_text AS masked_text, d.labels "
+             "FROM model.dataset d JOIN model.facts f USING (case_no)",
+}
 
 
 def load(name: str, n_labels: int):
@@ -82,18 +89,20 @@ def pos_weights(y: np.ndarray, cap: float = 10.0) -> np.ndarray:
 
 def run(db: str, out: str, model_name: str = DEFAULT_MODEL, epochs: int = 6, batch: int = 16, micro: int = 8,
         max_len: int = 512, lr: float = 5e-5, seed: int = 0, limit_train: int | None = None,
-        save_dir: str | None = "data/models/finetune", loader=load, weighted: bool = True) -> tuple[pd.DataFrame, float]:
+        save_dir: str | None = "data/models/finetune", loader=load, weighted: bool = True,
+        source: str = "summary") -> tuple[pd.DataFrame, float]:
     import torch
 
     _seed(seed)
     con = duckdb.connect(db)
-    data = con.execute("SELECT case_no, split, masked_text, labels FROM model.dataset "
-                       "WHERE split IN ('train', 'validation')").df()
+    data = con.execute(f"SELECT * FROM ({SOURCES[source]}) WHERE split IN ('train', 'validation')").df()
+    # series come from the whole training split, so models reading different inputs share one label set
+    all_train = con.execute("SELECT labels FROM model.dataset WHERE split = 'train'").df()
     train = data[data.split == "train"].sample(frac=1, random_state=seed).reset_index(drop=True)
     if limit_train:
         train = train.head(limit_train)
     val = data[data.split == "validation"].sort_values("case_no").reset_index(drop=True)
-    classes = sorted({lab for s in data[data.split == "train"]["labels"] for lab in _labels(s)})
+    classes = sorted({lab for s in all_train["labels"] for lab in _labels(s)})
     y_train = np.array([[float(c in _labels(s)) for c in classes] for s in train["labels"]], dtype=np.float32)
     y_val = np.array([[int(c in _labels(s)) for c in classes] for s in val["labels"]])
 
@@ -105,7 +114,7 @@ def run(db: str, out: str, model_name: str = DEFAULT_MODEL, epochs: int = 6, bat
     lengths = [len(x) for x in tok(texts[:2000], truncation=False)["input_ids"]]
     cut = float(np.mean([n > max_len for n in lengths]))
     print(f"{len(train)} training and {len(val)} validation cases, {len(classes)} series, device {device}; "
-          f"{cut:.1%} of training summaries are longer than {max_len} tokens and are cut", flush=True)
+          f"input {source}; {cut:.1%} of training texts are longer than {max_len} tokens and are cut", flush=True)
 
     accum = max(1, batch // micro)
     steps = math.ceil(len(train) / micro / accum) * epochs
@@ -165,10 +174,11 @@ def run(db: str, out: str, model_name: str = DEFAULT_MODEL, epochs: int = 6, bat
     probs.insert(1, "labels", val["labels"].values)
     con.execute("CREATE SCHEMA IF NOT EXISTS model")
     con.register("probs", probs)
-    con.execute("CREATE OR REPLACE TABLE model.finetune_validation AS SELECT * FROM probs")
+    con.execute(f"CREATE OR REPLACE TABLE model.{'finetune' if source == 'summary' else source}_validation AS "
+                "SELECT * FROM probs")
     con.close()
     text = "\n".join([
-        "# Fine-tuned transformer, validation split", "",
+        f"# Fine-tuned transformer, validation split, input: {source}", "",
         f"Model {model_name}, {epochs} epochs (best: epoch {best_epoch}), batch {batch}, learning rate {lr}, "
         f"positive weights {'sqrt(neg/pos), capped at 10' if weighted else 'none'}, "
         f"max {max_len} tokens ({cut:.1%} of training summaries cut), seed {seed}, device {device}. "
@@ -195,14 +205,16 @@ def load_saved(path: str):
 
 
 def ensemble_probs(db: str, split: str, dirs: list[str] = ENSEMBLE_DIRS, max_len: int = 512, batch: int = 16,
-                   loader=load_saved):
+                   loader=load_saved, source: str = "summary", case_nos: list[str] | None = None):
     """Each saved seed's probabilities on a split, and their average: (classes, cases, [per-seed], average)."""
     import torch
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     con = duckdb.connect(db, read_only=True)
-    cases = con.execute("SELECT case_no, masked_text, labels FROM model.dataset WHERE split = ? ORDER BY case_no",
-                        [split]).df()
+    cases = con.execute(f"SELECT case_no, masked_text, labels FROM ({SOURCES[source]}) WHERE split = ? "
+                        "ORDER BY case_no", [split]).df()
+    if case_nos is not None:
+        cases = cases[cases.case_no.isin(case_nos)].reset_index(drop=True)
     con.close()
     probs, classes = [], None
     for d in dirs:
@@ -259,20 +271,25 @@ def main() -> None:
     ap.add_argument("--epochs", type=int, default=6)
     ap.add_argument("--batch", type=int, default=16, help="effective batch size")
     ap.add_argument("--micro", type=int, default=8, help="cases per step on the GPU; lower it if memory runs out")
-    ap.add_argument("--max-len", type=int, default=512)
+    ap.add_argument("--max-len", type=int)
     ap.add_argument("--lr", type=float, default=5e-5)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--limit-train", type=int, help="train on this many cases only (to check memory and speed)")
     ap.add_argument("--no-weights", action="store_true", help="unweighted loss (the first validation run)")
+    ap.add_argument("--source", choices=sorted(SOURCES), default="summary",
+                    help="facts: train on the case documents' facts sections (H6; max length 1024 unless set)")
     ap.add_argument("--ensemble", action="store_true",
                     help="score the average of the saved seed 0, 1 and 2 models on validation (no training)")
     a = ap.parse_args()
     if a.ensemble:
         ensemble(a.db, "reports/finetune_ensemble_validation.md")
         return
-    out = a.out if a.seed == 0 or a.out != "reports/finetune_validation.md" else f"reports/finetune_validation_seed{a.seed}.md"
-    run(a.db, out, a.model, a.epochs, a.batch, a.micro, a.max_len, a.lr, a.seed, a.limit_train,
-        save_dir=f"data/models/finetune_seed{a.seed}" if a.seed else "data/models/finetune", weighted=not a.no_weights)
+    name = "finetune" if a.source == "summary" else a.source
+    suffix = f"_seed{a.seed}" if a.seed else ""
+    out = a.out if a.out != "reports/finetune_validation.md" else f"reports/{name}_validation{suffix}.md"
+    max_len = a.max_len or (512 if a.source == "summary" else 1024)
+    run(a.db, out, a.model, a.epochs, a.batch, a.micro, max_len, a.lr, a.seed, a.limit_train,
+        save_dir=f"data/models/{name}{suffix}", weighted=not a.no_weights, source=a.source)
 
 
 if __name__ == "__main__":
