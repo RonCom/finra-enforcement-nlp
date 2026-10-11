@@ -42,7 +42,7 @@ import pandas as pd
 from finra_nlp import rag
 from finra_nlp.zeroshot import MODEL, NUM_CTX, THINK, _post_waiting
 
-ANSWER_PROMPT = "v3"  # --prompt v1 or v2 reruns or rescores an earlier version
+ANSWER_PROMPT = "v2"  # chosen on validation (spec change log); --prompt v1 or v3 reruns another version
 JUDGE_PROMPT = "v1"
 H5_N, H5_SEED = 100, 5
 H4_QUESTIONS = "docs/out_of_scope_questions.csv"
