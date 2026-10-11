@@ -12,6 +12,7 @@ Writes model.facts (case_no, split, facts_text, chars, start). Reads cached docu
 Usage:
     uv run python -m finra_nlp.facts
     uv run python -m finra_nlp.facts --show 5      # print five extracted sections to read
+    uv run python -m finra_nlp.facts --dropped 8   # and what the rule filter removed from eight cases it left out
 """
 
 from __future__ import annotations
@@ -44,7 +45,7 @@ SUBHEAD_RE = re.compile(r"\(\s*(?:Alleged\s+)?Violations?\s+of\b.{0,300}?\)", re
 RULE_REF_RE = re.compile(r"\[RULE\]|\b(?:FINRA|NASD|MSRB|SEC) rules?\b", re.IGNORECASE)
 EXPLAIN_RE = re.compile(r"\b(?:requires?|required|requiring|provides?|prohibit(?:s|ed)?|states?|mandates?|obligates?|"
                         r"defines?|imposes?|appl(?:y|ies)|establish(?:es)?|governs?|must|shall|in pertinent part|"
-                        r"is (?:designed|intended)|means)\b|[\"“”]", re.IGNORECASE)
+                        r"is (?:designed|intended)|means|violat\w*|constitut\w*|inconsistent with)\b|[\"“”]", re.IGNORECASE)
 GUIDANCE_RE = re.compile(r"Regulatory Notice|Notice to Members|Supplementary Material|BrokerCheck", re.IGNORECASE)
 # PDF text often drops the space after a period ("procedures.The firm"), so a lowercase letter, a period and a
 # capital also end a sentence. A closing quote can follow the period.
@@ -94,7 +95,7 @@ def document_text(client: PoliteClient, url) -> str:
     return pdf_text(body) if status == 200 and body.startswith(b"%PDF") else ""
 
 
-def build(db: str, client: PoliteClient | None = None, show: int = 0) -> pd.DataFrame:
+def build(db: str, client: PoliteClient | None = None, show: int = 0, dropped_show: int = 0) -> pd.DataFrame:
     client = client or PoliteClient(cache_dir="data/cache/finra")
     con = duckdb.connect(db)
     cases = con.execute("""SELECT d.case_no, d.split, l.doc_url FROM model.dataset d
@@ -103,7 +104,7 @@ def build(db: str, client: PoliteClient | None = None, show: int = 0) -> pd.Data
         ocr_urls = dict(con.execute("SELECT case_no, doc_url FROM raw.case_ocr_labels").fetchall())
     except duckdb.CatalogException:
         ocr_urls = {}
-    filtered_out = 0
+    filtered_out = []
     rows, dropped = [], {"no document": 0, "no facts heading": 0, f"under {MIN_CHARS} characters": 0}
     for i, r in enumerate(cases.itertuples(index=False), 1):
         text = document_text(client, ocr_urls.get(r.case_no) or r.doc_url)
@@ -118,7 +119,9 @@ def build(db: str, client: PoliteClient | None = None, show: int = 0) -> pd.Data
         masked = narrative(before)
         if len(masked) < MIN_CHARS:
             dropped[f"under {MIN_CHARS} characters"] += 1
-            filtered_out += len(before) >= MIN_CHARS
+            if len(before) >= MIN_CHARS:
+                filtered_out.append({"case_no": r.case_no, "before": len(before), "after": len(masked),
+                                     "removed": [x for x in SENTENCE_RE.split(before) if x and rule_talk(x)]})
             continue
         rows.append({"case_no": r.case_no, "split": r.split, "facts_text": masked, "chars": len(masked), "start": kind})
         if i % 500 == 0:
@@ -131,14 +134,24 @@ def build(db: str, client: PoliteClient | None = None, show: int = 0) -> pd.Data
 
     print(f"\n{len(df)} of {len(cases)} dataset cases have a facts section; left out: "
           + ", ".join(f"{v} {k}" for k, v in dropped.items())
-          + f" ({filtered_out} of those were long enough before rule sentences were removed)")
+          + f" ({len(filtered_out)} of those were long enough before rule sentences were removed)")
     if len(df):
         print(df.groupby("split").agg(cases=("case_no", "size"), median_chars=("chars", "median")).to_string())
         print(df.start.value_counts().to_string())
         leaky = df.facts_text.map(lambda t: bool(leaks(t)))
-        stated = df.facts_text.str.contains(r"\bviolat(?:ed|ion|ions)\b", case=False)
+        stated = df.facts_text.str.contains(r"\bviolat", case=False)
         print(f"numbered rule references left: {int(leaky.sum())}; texts still saying 'violated'/'violation': "
               f"{int(stated.sum())}")
+    if filtered_out:
+        fo = pd.DataFrame(filtered_out)
+        print(f"\nCases the rule filter took under {MIN_CHARS} characters: characters before, quartiles "
+              f"{fo.before.quantile([.25, .5, .75]).astype(int).tolist()}; after, "
+              f"{fo.after.quantile([.25, .5, .75]).astype(int).tolist()}; sentences removed, median "
+              f"{int(fo.removed.str.len().median())}")
+        for r in fo.sample(min(dropped_show, len(fo)), random_state=0).itertuples(index=False):
+            print(f"\n--- removed from {r.case_no} ({r.before} -> {r.after} characters) ---")
+            for x in r.removed[:6]:
+                print(f"  * {x[:300]}")
     for r in df.sample(min(show, len(df)), random_state=0).itertuples(index=False) if show else []:
         print(f"\n--- {r.case_no} ({r.split}, {r.chars} characters, from '{r.start}') ---\n{r.facts_text[:1500]}")
     return df
@@ -148,8 +161,10 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", default="data/finra.duckdb")
     ap.add_argument("--show", type=int, default=0, help="print this many extracted sections")
+    ap.add_argument("--dropped", type=int, default=0,
+                    help="print the removed sentences of this many cases the rule filter took under the minimum")
     a = ap.parse_args()
-    build(a.db, show=a.show)
+    build(a.db, show=a.show, dropped_show=a.dropped)
 
 
 if __name__ == "__main__":

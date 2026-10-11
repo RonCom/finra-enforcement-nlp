@@ -175,3 +175,9 @@ def test_narrative_keeps_passing_mentions_and_splits_run_on_sentences():
                 "\"members shall make and preserve books.\" Smith did not respond.")
     assert narrative(text) == ("On March 1, 2019, FINRA sent Smith a request under [RULE] for documents. The response "
                                "was due on April 1, 2019. Smith did not respond.")
+
+
+def test_narrative_drops_sentences_saying_conduct_violates_a_rule():
+    from finra_nlp.facts import narrative
+    assert narrative("Forgery violates [RULE]. Summers signed his supervisor's name.") == \
+        "Summers signed his supervisor's name."
