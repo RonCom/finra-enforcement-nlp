@@ -40,6 +40,10 @@ EMBED_MODEL = os.environ.get("RAG_EMBED_MODEL", "nomic-embed-text")
 RULEBOOK_DB = "data/rulebook.duckdb"
 RAG_DB = "data/rag.duckdb"
 MAX_WORDS, OVERLAP = 250, 40
+# Section headings ("2120. Commissions, Mark Ups and Charges") have no text of their own, and reserved or deleted
+# rules a line ("Deleted by SR-FINRA-2010-060 eff. Dec. 15, 2010."); the shortest real rules run 8 words ("All
+# witnesses must testify under oath or affirmation.")
+MIN_WORDS = 8
 TOP_K = 5
 RETRIEVERS = ["bm25", "dense", "hybrid"]
 STOP = set(("a an and are as at be by for from has have if in into is it its of on or that the their this to was "
@@ -62,9 +66,11 @@ def rule_body(text: str, title: str) -> str:
     if i >= 0:
         t = t[i + len(title):]
     t = TABS_RE.sub("", t.strip())
+    # without the title to cut at, the page's navigation is still in front; don't mistake it for the footer
+    first = 0 if i >= 0 else 200
     for end in ("Rulebook Search", "Related Topics", "Sign Up for Newsletters", "©"):
         j = t.find(end)
-        if j > 200:
+        if j >= first:
             t = t[:j]
     h = HISTORY_RE.search(t)
     if h and h.start() > 0:
@@ -90,7 +96,7 @@ def chunk_pages(pages: pd.DataFrame) -> pd.DataFrame:
         if SERIES_PAGE_RE.match(str(p.rule_no)):
             continue
         body = rule_body(p.text or "", p.title or "")
-        if len(body.split()) < 15:
+        if len(body.split()) < MIN_WORDS:
             continue
         for j, piece in enumerate(split_words(body)):
             rows.append({"rule_no": str(p.rule_no).upper(), "title": p.title, "url": p.url, "part": j,
@@ -259,7 +265,7 @@ def retrieval(db: str, split: str = "validation", rag_db: str = RAG_DB, out: str
 
 
 def unindexed(rulebook_db: str = RULEBOOK_DB, show: int = 100) -> pd.DataFrame:
-    """Rules with a page but no chunk (rule text under 15 words, or a series page), with what their text says."""
+    """Rules with a page but no chunk (rule text under MIN_WORDS words, or a series page), with what their text says."""
     con = duckdb.connect(rulebook_db, read_only=True)
     pages = con.execute("SELECT rule_no, title, url, text FROM raw.rulebook_pages").df()
     con.close()
