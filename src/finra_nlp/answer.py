@@ -42,7 +42,7 @@ import pandas as pd
 from finra_nlp import rag
 from finra_nlp.zeroshot import MODEL, NUM_CTX, THINK, _post_waiting
 
-ANSWER_PROMPT = "v1"
+ANSWER_PROMPT = "v2"  # --prompt v1 reruns or rescores the first version
 JUDGE_PROMPT = "v1"
 H5_N, H5_SEED = 100, 5
 H4_QUESTIONS = "docs/out_of_scope_questions.csv"
@@ -61,6 +61,21 @@ in the excerpts.
 - Decline when the question is governed by something other than FINRA's rules (SEC rules for investment advisers \
 or public companies, federal statutes, state law, court decisions) or when the excerpts don't answer it. To \
 decline, set "decline" to true, cite no rules, and give the reason in one sentence.
+
+Reply in JSON.""",
+          "v2": """You answer questions about the FINRA Rulebook, the rules FINRA sets for its member broker-dealers \
+and their associated persons. You get numbered excerpts from the Rulebook; each begins with its rule number and \
+title. Use only the excerpts.
+
+- Cite each rule you rely on by the number shown in its excerpt header, such as "3110". Cite only rules that appear \
+in the excerpts.
+- When the user describes conduct from a FINRA disciplinary case, name the rules among the excerpts that the \
+conduct violated. The same conduct may also break SEC rules or federal statutes; that is no reason to decline, \
+cite the FINRA rules that apply. Decline only if no excerpt covers the conduct.
+- For any other question, decline when it is governed by something other than FINRA's rules (SEC rules for \
+investment advisers or public companies, federal statutes, state law, court decisions) or when the excerpts don't \
+answer it.
+- To decline, set "decline" to true, cite no rules, and give the reason in one sentence.
 
 Reply in JSON."""}
 
@@ -118,9 +133,9 @@ def _chat(client: httpx.Client, system: str, user: str, schema: dict, model: str
 
 
 def answer(question: str, chunks: pd.DataFrame, client: httpx.Client, model: str = MODEL,
-           prompt: str = ANSWER_PROMPT) -> dict:
+           prompt: str | None = None) -> dict:
     """The model's answer, with cited rules kept only if they're among the excerpts' rules."""
-    out = _chat(client, SYSTEM[prompt], f"Excerpts:\n\n{excerpts(chunks)}\n\nQuestion:\n{question}",
+    out = _chat(client, SYSTEM[prompt or ANSWER_PROMPT], f"Excerpts:\n\n{excerpts(chunks)}\n\nQuestion:\n{question}",
                 ANSWER_SCHEMA, model)
     shown = {rag.base_rule(r) for r in chunks.rule_no}
     cited = [rule_no(r.get("rule", "")) for r in out.get("rules", [])]
@@ -139,7 +154,9 @@ def ensure_tables(con) -> None:
                    question VARCHAR, chunk_rules VARCHAR, decline BOOLEAN, rules VARCHAR, outside INTEGER,
                    reasons VARCHAR, answer VARCHAR, model VARCHAR, prompt VARCHAR)""")
     con.execute("""CREATE TABLE IF NOT EXISTS judgments (item_id VARCHAR, split VARCHAR, label VARCHAR,
-                   reason VARCHAR, model VARCHAR, prompt VARCHAR)""")
+                   reason VARCHAR, model VARCHAR, prompt VARCHAR, answer_prompt VARCHAR)""")
+    # judgments made before answer prompts were versioned judged v1 answers
+    con.execute("ALTER TABLE judgments ADD COLUMN IF NOT EXISTS answer_prompt VARCHAR DEFAULT 'v1'")
 
 
 def _done(con, kind: str, model: str, prompt: str) -> set[str]:
@@ -208,8 +225,9 @@ def judge(db: str, split: str = "validation", rag_db: str = rag.RAG_DB, client: 
     ensure_tables(con)
     todo = con.execute("""SELECT a.item_id, a.question, a.decline, a.reasons, a.rules FROM answers a
                           WHERE a.kind = 'case' AND a.split = ? AND a.prompt = ? AND a.item_id NOT IN
-                          (SELECT item_id FROM judgments WHERE split = ? AND model = ? AND prompt = ?)""",
-                       [split, ANSWER_PROMPT, split, model, prompt]).df()
+                          (SELECT item_id FROM judgments WHERE split = ? AND model = ? AND prompt = ?
+                           AND answer_prompt = ?)""",
+                       [split, ANSWER_PROMPT, split, model, prompt, ANSWER_PROMPT]).df()
     print(f"judging {len(todo)} answers", flush=True)
     for r in todo.itertuples(index=False):
         if r.decline:
@@ -221,15 +239,20 @@ def judge(db: str, split: str = "validation", rag_db: str = rag.RAG_DB, client: 
             out = _chat(client, JUDGE[prompt], f"Conduct: {gold.loc[r.item_id, 'masked_text']}\n\n"
                         f"Rules FINRA charged: {charged}\n\nThe answer's cited rules:\n{cited}", JUDGE_SCHEMA, model)
             label, reason = out.get("label", "incorrect"), out.get("reason", "")
-        con.execute("INSERT INTO judgments VALUES (?, ?, ?, ?, ?, ?)", [r.item_id, split, label, reason, model, prompt])
+        con.execute("INSERT INTO judgments (item_id, split, label, reason, model, prompt, answer_prompt) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)", [r.item_id, split, label, reason, model, prompt, ANSWER_PROMPT])
     con.close()
 
 
 def _case_answers(db: str, split: str, rag_db: str, model: str) -> pd.DataFrame:
+    ensure = duckdb.connect(rag_db)
+    ensure_tables(ensure)
+    ensure.close()
     con = duckdb.connect(rag_db, read_only=True)
     ans = con.execute("""SELECT a.item_id AS case_no, a.decline, a.rules AS cited, a.outside, a.chunk_rules,
-                         j.label AS judge FROM answers a LEFT JOIN judgments j
+                         a.answer, a.reasons, j.label AS judge FROM answers a LEFT JOIN judgments j
                          ON j.item_id = a.item_id AND j.split = a.split AND j.model = a.model AND j.prompt = ?
+                         AND j.answer_prompt = a.prompt
                          WHERE a.kind = 'case' AND a.split = ? AND a.model = ? AND a.prompt = ?""",
                       [JUDGE_PROMPT, split, model, ANSWER_PROMPT]).df()
     con.close()
@@ -254,7 +277,21 @@ def report(db: str, split: str = "validation", rag_db: str = rag.RAG_DB, model: 
              f"| Charged rules cited (recall) | {sum(hits) / n_gold if n_gold else 0:.3f} |",
              f"| Citations dropped as not in the excerpts | {int(df.outside.sum())} |",
              f"| Judge: correct | {(df.judge == 'correct').mean():.3f} ({int(df.judge.notna().sum())} judged) |", ""]
-    path = out or f"reports/answers_{split}.md"
+    df["retrieved"] = retrieved
+    df["hits"] = hits
+    gave_up = df[df.decline & df.retrieved]
+    lines += [f"Declined although a charged rule was among the excerpts: {len(gave_up)} of {int(df.decline.sum())} "
+              "declines.", "", "## Declines with a charged rule in the excerpts", ""]
+    for r in gave_up.head(8).itertuples(index=False):
+        lines.append(f"- **{r.case_no}** (charged {r.rules.replace('|', ', ')}; excerpts "
+                     f"{r.chunk_rules.replace('|', ', ')}): {r.answer[:300]}")
+    wrong = df[~df.decline & (df.hits == 0)]
+    lines += ["", f"## Answers citing no charged rule ({len(wrong)})", ""]
+    for r in wrong.head(8).itertuples(index=False):
+        lines.append(f"- **{r.case_no}** (charged {r.rules.replace('|', ', ')}; cited {r.cited.replace('|', ', ')}; "
+                     f"excerpts {r.chunk_rules.replace('|', ', ')})")
+    lines.append("")
+    path = out or f"reports/answers_{split}_{ANSWER_PROMPT}.md"
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text("\n".join(lines), encoding="utf-8")
     print("\n".join(lines))
@@ -388,6 +425,7 @@ def smoke(client: httpx.Client | None = None, model: str = MODEL) -> list[dict]:
 
 
 def main() -> None:
+    global ANSWER_PROMPT
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("cases")
@@ -403,7 +441,10 @@ def main() -> None:
     k.add_argument("--labels", required=True)
     for p in (c, j, sub.choices["report"], sub.choices["export"], k):
         p.add_argument("--db", default="data/finra.duckdb")
+    for p in sub.choices.values():
+        p.add_argument("--prompt", choices=sorted(SYSTEM), default=ANSWER_PROMPT, help="answer prompt version")
     a = ap.parse_args()
+    ANSWER_PROMPT = a.prompt
     if a.cmd == "cases":
         run_cases(a.db, a.split, a.n)
     elif a.cmd == "judge":

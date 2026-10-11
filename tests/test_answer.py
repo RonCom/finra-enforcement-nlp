@@ -102,3 +102,13 @@ def test_smoke(capsys):
     res = answer.smoke(_ollama(log))
     assert res[0]["decline"] is False and res[0]["rules"] == "8210" and res[1]["decline"] is True
     assert "as expected" in capsys.readouterr().out
+
+
+def test_old_judgments_table_gets_answer_prompt(tmp_path):
+    con = duckdb.connect(str(tmp_path / "r.duckdb"))
+    con.execute("""CREATE TABLE judgments (item_id VARCHAR, split VARCHAR, label VARCHAR, reason VARCHAR,
+                   model VARCHAR, prompt VARCHAR)""")
+    con.execute("INSERT INTO judgments VALUES ('a1', 'validation', 'correct', 'x', 'm', 'v1')")
+    answer.ensure_tables(con)
+    assert con.execute("SELECT answer_prompt FROM judgments").fetchone()[0] == "v1"
+    con.close()
