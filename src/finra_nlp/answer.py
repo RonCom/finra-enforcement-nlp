@@ -11,11 +11,13 @@ the excerpts don't answer it. Citations of rules that aren't among the excerpts 
     h4        the 20 out-of-scope questions (docs/out_of_scope_questions.csv, keep = Y), once, under a freeze tag
     export    the H5 sample's answers as a CSV to label by hand, without the judge's labels
     kappa     Cohen's kappa between the judge and the hand labels (H5)
+    smoke     one in-scope and one out-of-scope question over three stand-in excerpts, to check the local model
 
 Answers and judge labels are stored in data/rag.duckdb (tables answers, judgments) and runs resume. Prompts are
 versioned; changing one means a new version, developed on validation only.
 
 Usage:
+    uv run python -m finra_nlp.answer smoke                        # try the prompt on the local model, no index needed
     uv run python -m finra_nlp.answer cases --n 50                 # validation, 50 random cases
     uv run python -m finra_nlp.answer judge
     uv run python -m finra_nlp.answer report
@@ -126,7 +128,8 @@ def answer(question: str, chunks: pd.DataFrame, client: httpx.Client, model: str
     decline = bool(out.get("decline")) or not kept
     return {"decline": decline, "rules": "" if decline else "|".join(kept),
             "outside": sum(1 for c in cited if c and rag.base_rule(c) not in shown),
-            "reasons": json.dumps(out.get("rules", []), ensure_ascii=False), "answer": out.get("answer", "")}
+            "reasons": json.dumps(out.get("rules", []), ensure_ascii=False), "answer": out.get("answer", ""),
+            "raw": out}
 
 
 # ---- storage ------------------------------------------------------------------------------------------------
@@ -341,6 +344,48 @@ def kappa(db: str, labels: str, rag_db: str = rag.RAG_DB, model: str = MODEL, ou
     return k
 
 
+# ---- smoke test --------------------------------------------------------------------------------------------
+
+# Paraphrased stand-ins for three Rulebook rules (not FINRA's text), so the prompt and schema can be tried on the
+# local model before the Rulebook is downloaded
+SMOKE_CHUNKS = pd.DataFrame([
+    {"rule_no": "3110", "title": "Supervision", "text": "Each member firm must have a system to supervise the "
+     "activities of its registered representatives and associated persons, with written procedures, designated "
+     "principals and reviews of correspondence and transactions, reasonably designed to achieve compliance."},
+    {"rule_no": "8210", "title": "Provision of Information and Testimony and Inspection and Copying of Books",
+     "text": "FINRA staff may require a member or associated person to provide information and documents and to "
+     "testify under oath in an investigation or examination. A person may not fail to comply with such a request."},
+    {"rule_no": "3270", "title": "Outside Business Activities of Registered Persons", "text": "A registered "
+     "person may not be employed by or receive compensation from any outside business activity without first "
+     "giving the member firm written notice."},
+])
+SMOKE_QUESTIONS = [
+    ("in scope", case_question("FINRA sent the respondent two written requests for documents and for on-the-record "
+                               "testimony in an investigation of his termination. He acknowledged receiving them "
+                               "and refused to provide the documents or appear.")),
+    ("out of scope", "How soon after a client signs an advisory contract must a registered investment adviser "
+                     "deliver its Form ADV Part 2A brochure?"),
+]
+
+
+def smoke(client: httpx.Client | None = None, model: str = MODEL) -> list[dict]:
+    """Ask the local model one in-scope and one out-of-scope question over three stand-in excerpts; print its raw
+    JSON and what `answer` keeps. Expected: 8210 cited for the first, a decline for the second."""
+    import time
+    client = client or httpx.Client(timeout=600)
+    results = []
+    for kind, q in SMOKE_QUESTIONS:
+        start = time.monotonic()
+        a = answer(q, SMOKE_CHUNKS, client, model)
+        print(f"--- {kind} ({time.monotonic() - start:.0f} s) ---")
+        print("raw:", json.dumps(a["raw"], indent=2, ensure_ascii=False))
+        print(f"kept: decline={a['decline']} rules={a['rules'] or '-'} dropped={a['outside']}\n")
+        results.append(a)
+    ok = results[0]["rules"] == "8210" and results[1]["decline"]
+    print("as expected" if ok else "NOT as expected: in scope should cite 8210 only, out of scope should decline")
+    return results
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -351,6 +396,7 @@ def main() -> None:
     j.add_argument("--split", default="validation", choices=["validation", "test"])
     sub.add_parser("report")
     sub.add_parser("h4")
+    sub.add_parser("smoke")
     sub.add_parser("export")
     k = sub.add_parser("kappa")
     k.add_argument("--labels", required=True)
@@ -363,6 +409,8 @@ def main() -> None:
         judge(a.db, a.split)
     elif a.cmd == "report":
         report(a.db)
+    elif a.cmd == "smoke":
+        smoke()
     elif a.cmd == "h4":
         h4()
     elif a.cmd == "export":

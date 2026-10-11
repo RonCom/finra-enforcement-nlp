@@ -95,3 +95,10 @@ def test_test_split_sample_export_and_kappa(env, monkeypatch):
     rows.assign(label="").to_csv(labels, index=False)
     with pytest.raises(SystemExit, match="no label"):
         answer.kappa(env["db"], str(labels), env["rag_db"], out=str(env["tmp"] / "h5b.md"))
+
+
+def test_smoke(capsys):
+    log = []
+    res = answer.smoke(_ollama(log))
+    assert res[0]["decline"] is False and res[0]["rules"] == "8210" and res[1]["decline"] is True
+    assert "as expected" in capsys.readouterr().out
