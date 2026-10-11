@@ -46,6 +46,9 @@ MAX_WORDS, OVERLAP = 250, 40
 MIN_WORDS = 8
 TOP_K = 5
 RETRIEVERS = ["bm25", "dense", "hybrid"]
+# H3 is judged on BM25, the best of the three on every validation run (spec change log); the answers use it too
+H3_RETRIEVER = "bm25"
+H3_LINE = 0.70
 STOP = set(("a an and are as at be by for from has have if in into is it its of on or that the their this to was "
             "were which with not no may can will shall should must any such other").split())
 
@@ -277,7 +280,7 @@ def retrieval(db: str, split: str = "validation", rag_db: str = RAG_DB, out: str
               check=None) -> pd.DataFrame:
     if split == "test":
         from finra_nlp.testrun import frozen
-        (check or frozen)(out or "reports/retrieval_test.md")
+        freeze = (check or frozen)(out or "reports/retrieval_test.md")
     con = duckdb.connect(db, read_only=True)
     cases = con.execute("SELECT case_no, masked_text, rules FROM model.dataset WHERE split = ? ORDER BY case_no",
                         [split]).df()
@@ -312,6 +315,11 @@ def retrieval(db: str, split: str = "validation", rag_db: str = RAG_DB, out: str
              "", "| Retriever | Hit rate, top 5 | MRR |", "| --- | --- | --- |"]
     for m in RETRIEVERS:
         lines.append(f"| {m} | {res[f'{m}_hit'].mean():.3f} | {res[f'{m}_rr'].mean():.3f} |")
+    if split == "test":
+        hit = res[f"{H3_RETRIEVER}_hit"].mean()
+        lines += ["", f"Code: {freeze}.", "", "| ID | Test | Expectation | Result | Verdict |", "| --- | --- | --- | --- | --- |",
+                  f"| H3 | A charged rule among the top {TOP_K} rules, {H3_RETRIEVER} | >= {H3_LINE:.0%} | {hit:.1%} | "
+                  f"{'Met' if hit >= H3_LINE else 'Failed'} |"]
     if len(res):
         # thirds by summary length; ranking first keeps three bins when many summaries share a length
         res["length"] = pd.qcut(res.words.rank(method="first"), min(3, len(res)),

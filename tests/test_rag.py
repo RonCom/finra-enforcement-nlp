@@ -109,8 +109,10 @@ def test_test_split_requires_freeze(tmp_path):
     rb, rdb = _rulebook(tmp_path), str(tmp_path / "rag.duckdb")
     rag.build_index(rb, rdb, FakeEmbedder())
     rag.retrieval(_dataset(tmp_path), "test", rdb, str(tmp_path / "t.md"), rag.Index(rdb, FakeEmbedder()),
-                  check=called.append)
+                  check=lambda r: called.append(r) or "freeze-x at abc")
     assert called == [str(tmp_path / "t.md")]
+    text = (tmp_path / "t.md").read_text()
+    assert "Code: freeze-x at abc." in text and "| H3 |" in text and "bm25" in text
 
 
 def test_rule_body_drops_tabs_and_history():
