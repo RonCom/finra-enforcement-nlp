@@ -99,9 +99,17 @@ def terms(client: PoliteClient, out: str) -> str:
     return text
 
 
+def canonical(url: str) -> str:
+    """One address per page: some links go through /index.php/ or end in a slash, and the crawl read those pages
+    a second time."""
+    u = urlparse(url.split("#")[0].split("?")[0])
+    path = re.sub(r"^/index\.php(?=/)", "", u.path).rstrip("/") or "/"
+    return f"https://{u.netloc.lower()}{path}"
+
+
 def rule_links(html: bytes, page_url: str) -> list[str]:
     soup = BeautifulSoup(html, "lxml")
-    links = [urljoin(page_url, a["href"]).split("#")[0].split("?")[0] for a in soup.find_all("a", href=True)]
+    links = [canonical(urljoin(page_url, a["href"])) for a in soup.find_all("a", href=True)]
     return list(dict.fromkeys(u for u in links if RULE_LINK_RE.search(urlparse(u).path)))
 
 
@@ -142,6 +150,10 @@ def download(client: PoliteClient, db: str, limit: int | None) -> pd.DataFrame:
         if len(rows) % 25 == 0:
             print(f"  {len(rows)} pages, {len(set(queue) - seen)} found and not yet read", flush=True)
     df = pd.DataFrame(rows, columns=["rule_no", "title", "url", "text"])
+    before = len(df)
+    df = df.drop_duplicates("rule_no").reset_index(drop=True)
+    if before > len(df):
+        print(f"  {before - len(df)} pages repeated a rule already read and were left out")
     con = duckdb.connect(db)
     con.execute("CREATE SCHEMA IF NOT EXISTS raw")
     con.register("df", df)

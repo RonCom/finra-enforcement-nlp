@@ -331,3 +331,11 @@ def test_title_share(tmp_path):
     assert r["overall"] == 1 / 5  # case 1 only: NASD 3010 maps to 3110, whose title it contains
     assert r["by_series"].loc["FINRA:3000", "cases"] == 3 and r["by_series"].loc["FINRA:3000", "with_title"] == 1 / 3
     assert "20.0%" in (tmp_path / "t.md").read_text()
+
+
+def test_rule_links_one_address_per_page():
+    page = (b'<a href="/index.php/rules-guidance/rulebooks/finra-rules/3110">a</a>'
+            b'<a href="https://WWW.finra.org/rules-guidance/rulebooks/finra-rules/3110/">b</a>'
+            b'<a href="/rules-guidance/rulebooks/finra-rules/3110?x=1#y">c</a>')
+    assert rulebook.rule_links(page, rulebook.INDEX_URL) == [
+        "https://www.finra.org/rules-guidance/rulebooks/finra-rules/3110"]
