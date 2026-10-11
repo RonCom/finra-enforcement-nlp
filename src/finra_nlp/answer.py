@@ -42,7 +42,7 @@ import pandas as pd
 from finra_nlp import rag
 from finra_nlp.zeroshot import MODEL, NUM_CTX, THINK, _post_waiting
 
-ANSWER_PROMPT = "v2"  # --prompt v1 reruns or rescores the first version
+ANSWER_PROMPT = "v3"  # --prompt v1 or v2 reruns or rescores an earlier version
 JUDGE_PROMPT = "v1"
 H5_N, H5_SEED = 100, 5
 H4_QUESTIONS = "docs/out_of_scope_questions.csv"
@@ -72,6 +72,22 @@ in the excerpts.
 - When the user describes conduct from a FINRA disciplinary case, name the rules among the excerpts that the \
 conduct violated. The same conduct may also break SEC rules or federal statutes; that is no reason to decline, \
 cite the FINRA rules that apply. Decline only if no excerpt covers the conduct.
+- For any other question, decline when it is governed by something other than FINRA's rules (SEC rules for \
+investment advisers or public companies, federal statutes, state law, court decisions) or when the excerpts don't \
+answer it.
+- To decline, set "decline" to true, cite no rules, and give the reason in one sentence.
+
+Reply in JSON.""",
+          "v3": """You answer questions about the FINRA Rulebook, the rules FINRA sets for its member broker-dealers \
+and their associated persons. You get numbered excerpts from the Rulebook. Each begins with its rule number and \
+title; the title says what the whole rule covers, and the excerpt is only part of the rule.
+
+- Cite each rule you rely on by the number shown in its excerpt header, such as "3110". Cite only rules that appear \
+in the excerpts.
+- When the user describes conduct from a FINRA disciplinary case, cite every excerpted rule that covers any part of \
+the conduct, even if no excerpt covers all of it. The rule numbers in the description were replaced with [RULE] on \
+purpose; don't look for them. The conduct may also break SEC or MSRB rules or federal statutes; that is no reason to \
+decline. Decline only if no excerpted rule covers any of the conduct.
 - For any other question, decline when it is governed by something other than FINRA's rules (SEC rules for \
 investment advisers or public companies, federal statutes, state law, court decisions) or when the excerpts don't \
 answer it.
