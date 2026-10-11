@@ -181,6 +181,11 @@ class Index:
         return self.chunks.iloc[top].assign(score=s[top], rank=np.arange(1, len(top) + 1))
 
 
+def base_rule(rule_no: str) -> str:
+    """'3110.05' (a Supplementary Material page) -> '3110'."""
+    return str(rule_no).upper().split(".")[0]
+
+
 def finra_rules(rules: str) -> set[str]:
     """Rule numbers a case was charged with that the Rulebook holds: FINRA rules and NASD rules' successors,
     without Rule 2010 and procedural rules."""
@@ -204,7 +209,7 @@ def retrieval(db: str, split: str = "validation", rag_db: str = RAG_DB, out: str
     cases["gold"] = cases.rules.map(finra_rules)
     scored = cases[cases.gold.map(bool)].reset_index(drop=True)
     idx = index or Index(rag_db)
-    in_book = set(idx.chunks.rule_no)
+    in_book = set(idx.chunks.rule_no.map(base_rule))
     qvecs = idx.embedder.embed(scored.masked_text.fillna("").tolist(), "query")
     rows = []
     for i, r in enumerate(scored.itertuples(index=False)):
@@ -213,7 +218,7 @@ def retrieval(db: str, split: str = "validation", rag_db: str = RAG_DB, out: str
                "gold_in_book": bool(r.gold & in_book)}
         for m in RETRIEVERS:
             hits = idx.rank(r.masked_text or "", m, TOP_K, qvecs[i])
-            ranks = [k + 1 for k, rule in enumerate(hits.rule_no) if rule in r.gold]
+            ranks = [k + 1 for k, rule in enumerate(hits.rule_no) if base_rule(rule) in r.gold]
             row[f"{m}_hit"] = bool(ranks)
             row[f"{m}_rr"] = 1.0 / ranks[0] if ranks else 0.0
         rows.append(row)

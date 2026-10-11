@@ -73,6 +73,7 @@ git push origin freeze-1
 uv run python -m finra_nlp.testrun zeroshot --workers 2   # zero-shot answers the test cases (resumes)
 ollama stop gemma4:26b
 uv run python -m finra_nlp.testrun score                  # reports/test_results.md, H1 and H2
+uv run python scripts/reliability.py                       # reports/reliability_test.md and .svg, from stored predictions
 ```
 
 ## H6: facts section vs. summary
@@ -97,6 +98,21 @@ uv run python -m finra_nlp.rulebook download
 ollama pull nomic-embed-text
 uv run python -m finra_nlp.rag index                       # data/rag.duckdb: ~250-word chunks with embeddings
 uv run python -m finra_nlp.rag retrieval                   # reports/retrieval_validation.md, H3 on validation
+```
+
+## Answers (H4, H5)
+
+```powershell
+uv run python -m finra_nlp.answer cases --n 50     # validation: 50 random cases answered from the index
+uv run python -m finra_nlp.answer judge            # the LLM judge labels them
+uv run python -m finra_nlp.answer report           # reports/answers_validation.md
+# frozen code only (git tag freeze-N, push the tag):
+uv run python -m finra_nlp.rag retrieval --split test           # H3
+uv run python -m finra_nlp.answer h4                            # reports/h4_results.md
+uv run python -m finra_nlp.answer cases --split test            # the 100-case H5 sample
+uv run python -m finra_nlp.answer judge --split test
+uv run python -m finra_nlp.answer export                        # reports/h5_handlabels.csv: fill `label`
+uv run python -m finra_nlp.answer kappa --labels reports/h5_handlabels.csv   # reports/h5_results.md
 ```
 
 The 20 out-of-scope questions for H4 are in [docs/out_of_scope_questions.csv](docs/out_of_scope_questions.csv); mark `keep` Y or N after review.
