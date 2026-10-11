@@ -203,6 +203,30 @@ def base_rule(rule_no: str) -> str:
     return str(rule_no).upper().split(".")[0]
 
 
+# A monthly summary opens with the sanction ("An AWC was issued in which the firm was censured and fined $50,000")
+# and ends with when it takes effect; those sentences match FINRA's rules on sanctions (8310, 8320, 9552), not the
+# rules broken. The conduct follows "the entry of findings that".
+SANCTION_Q_RE = re.compile(
+    r"\b(?:censur\w*|fined|fines?|suspen(?:ded|sions?)|barred|bar|sanction\w*|restitution|disgorg\w*|AWC|"
+    r"Acceptance, Waiver|in effect|appeal\w*|Hearing Panel|National Adjudicatory|Hearing Officers?|FINRA Case|"
+    r"default decision|requalify|ordered to pay)\b", re.IGNORECASE)
+FINDINGS_RE = re.compile(r"\bfindings that\s+(.*)", re.IGNORECASE | re.DOTALL)
+QUERY_SENTENCE_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z(\[])")
+
+
+def query_text(summary: str) -> str:
+    """The conduct in a masked summary: sanction and procedure sentences dropped, "findings that X" cut to X."""
+    out = []
+    for sent in QUERY_SENTENCE_RE.split(re.sub(r"\s+", " ", summary or "").strip()):
+        m = FINDINGS_RE.search(sent)
+        if m:
+            out.append(m.group(1))
+        elif not SANCTION_Q_RE.search(sent):
+            out.append(sent)
+    q = " ".join(out).strip()
+    return q or (summary or "")
+
+
 PARTS = ["conduct rules (0100-8000)", "Code of Procedure (9000)", "Uniform Practice Code (11000)",
          "arbitration and mediation codes (12000-14000)"]
 
@@ -237,14 +261,15 @@ def retrieval(db: str, split: str = "validation", rag_db: str = RAG_DB, out: str
     scored = cases[cases.gold.map(bool)].reset_index(drop=True)
     idx = index or Index(rag_db)
     in_book = set(idx.chunks.rule_no.map(base_rule))
-    qvecs = idx.embedder.embed(scored.masked_text.fillna("").tolist(), "query")
+    queries = scored.masked_text.fillna("").map(query_text)
+    qvecs = idx.embedder.embed(queries.tolist(), "query")
     rows = []
     for i, r in enumerate(scored.itertuples(index=False)):
         row = {"case_no": r.case_no, "words": len((r.masked_text or "").split()),
                "series": sorted({series_label("FINRA:" + g) for g in r.gold}),
                "gold_in_book": bool(r.gold & in_book)}
         for m in RETRIEVERS:
-            hits = idx.rank(r.masked_text or "", m, TOP_K, qvecs[i])
+            hits = idx.rank(queries[i], m, TOP_K, qvecs[i])
             ranks = [k + 1 for k, rule in enumerate(hits.rule_no) if base_rule(rule) in r.gold]
             row[f"{m}_hit"] = bool(ranks)
             row[f"{m}_rr"] = 1.0 / ranks[0] if ranks else 0.0
@@ -255,7 +280,7 @@ def retrieval(db: str, split: str = "validation", rag_db: str = RAG_DB, out: str
              f"{len(cases)} cases; {len(scored)} charged at least one FINRA Rulebook rule other than 2010 and are scored "
              f"({len(cases) - len(scored)} charged only SEC, MSRB or other rules and are left out). "
              f"{int((~res.gold_in_book).sum()) if len(res) else 0} scored cases have no charged rule among the "
-             f"{len(in_book)} rules indexed. Query: the masked summary. Hit: a charged rule is the rule of a top-{TOP_K} chunk.",
+             f"{len(in_book)} rules indexed. Query: the masked summary without its sanction and procedure sentences. Hit: a charged rule is the rule of a top-{TOP_K} chunk.",
              "", "| Retriever | Hit rate, top 5 | MRR |", "| --- | --- | --- |"]
     for m in RETRIEVERS:
         lines.append(f"| {m} | {res[f'{m}_hit'].mean():.3f} | {res[f'{m}_rr'].mean():.3f} |")

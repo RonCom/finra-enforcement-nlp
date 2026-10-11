@@ -136,3 +136,14 @@ def test_one_sentence_rules_are_indexed_and_deleted_ones_not():
 def test_rulebook_part():
     assert [rag.rulebook_part(r) for r in ("3110", "IM-2110-2", "9552", "11510", "13802")] == [
         rag.PARTS[0], rag.PARTS[0], rag.PARTS[1], rag.PARTS[2], rag.PARTS[3]]
+
+
+def test_query_text_keeps_conduct_only():
+    s = ("Acme Securities (CRD #1, New York, New York) October 2, 2023 - An AWC was issued in which the firm was "
+         "censured and fined $50,000. Without admitting or denying the findings, the firm consented to the "
+         "sanctions and to the entry of findings that it failed to supervise a representative's outside business. "
+         "The findings stated that the firm did not review his emails. The fine is in effect immediately. "
+         "(FINRA Case #2021070000001)")
+    assert rag.query_text(s) == ("it failed to supervise a representative's outside business. "
+                                 "The findings stated that the firm did not review his emails.")
+    assert rag.query_text("Only a fine of $5,000.") == "Only a fine of $5,000."

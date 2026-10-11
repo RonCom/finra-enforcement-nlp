@@ -194,7 +194,7 @@ def run_cases(db: str, split: str = "validation", n: int | None = 50, rag_db: st
         from finra_nlp.testrun import frozen
         (check or frozen)(H5_REPORT)
     cases = sample(scored_cases(db, split), split, n)
-    items = [(r.case_no, split, case_question(r.masked_text or ""), r.masked_text or "")
+    items = [(r.case_no, split, case_question(rag.query_text(r.masked_text)), rag.query_text(r.masked_text))
              for r in cases.itertuples(index=False)]
     _answer_all(items, "case", index or rag.Index(rag_db), client or httpx.Client(timeout=600), model, rag_db)
 
