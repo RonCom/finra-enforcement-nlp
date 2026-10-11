@@ -184,3 +184,10 @@ def test_narrative_drops_sentences_saying_conduct_violates_a_rule():
     from finra_nlp.facts import narrative
     assert narrative("Forgery violates [RULE]. Summers signed his supervisor's name.") == \
         "Summers signed his supervisor's name."
+
+
+def test_facts_section_ends_at_ocr_sanctions_line():
+    from finra_nlp.facts import facts_section
+    text = ("FACTS AND VIOLATIVE CONDUCT Schutte never disclosed the transaction to the Firm. B. I also consent to "
+            "the imposition ofthe following sanctions: A suspension of three months; and a fine of $5,000.")
+    assert facts_section(text)[0] == "Schutte never disclosed the transaction to the Firm."

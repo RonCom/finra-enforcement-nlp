@@ -37,7 +37,9 @@ HEADINGS = [  # tried in order; the first found starts the facts
     ("facts", re.compile(r"\b(?:[IVX]+\.\s*|[A-H]\.\s*)?(?:FACTS|Facts)\b(?=\s+[A-Z])")),
 ]
 # Where the facts end: the sanctions an AWC's respondent consents to, or a decision's conclusions and sanctions
-END_RE = re.compile(r"consents? to the imposition of the following sanctions|CONCLUSIONS?\s+OF\s+LAW|"
+# (OCR text drops spaces: "imposition ofthe following sanctions")
+END_RE = re.compile(r"consents?\s*to\s*the\s*imposition|imposition\s*of\s*the\s*following\s*sanctions|"
+                    r"CONCLUSIONS?\s+OF\s+LAW|"
                     r"\b(?:[IVX]+\.\s*)?SANCTIONS\b")
 STATED_RE = re.compile(r"\bviolat\w*|\bin contravention of\b", re.IGNORECASE)
 SUBHEAD_RE = re.compile(r"\(\s*(?:Alleged\s+)?Violations?\s+of\b.{0,300}?\)", re.IGNORECASE)
@@ -148,8 +150,9 @@ def build(db: str, client: PoliteClient | None = None, show: int = 0, dropped_sh
         print(df.start.value_counts().to_string())
         leaky = df.facts_text.map(lambda t: bool(leaks(t)))
         stated = df.facts_text.str.contains(r"\bviolat", case=False)
+        sanctions = df.facts_text.str.contains(r"sanction|\bfine of\b|statutory disqualification", case=False)
         print(f"numbered rule references left: {int(leaky.sum())}; texts still saying 'violated'/'violation': "
-              f"{int(stated.sum())}")
+              f"{int(stated.sum())}; texts mentioning sanctions or a fine: {int(sanctions.sum())}")
     if filtered_out:
         fo = pd.DataFrame(filtered_out)
         print(f"\nCases the rule filter took under {MIN_CHARS} characters: characters before, quartiles "
