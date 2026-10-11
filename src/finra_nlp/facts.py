@@ -38,17 +38,23 @@ HEADINGS = [  # tried in order; the first found starts the facts
 ]
 # Where the facts end: the sanctions an AWC's respondent consents to, or a decision's conclusions and sanctions
 # (OCR text drops spaces: "imposition ofthe following sanctions")
-END_RE = re.compile(r"consents?\s*to\s*the\s*imposition|imposition\s*of\s*the\s*following\s*sanctions|"
-                    r"CONCLUSIONS?\s+OF\s+LAW|"
-                    r"\b(?:[IVX]+\.\s*)?SANCTIONS\b")
-STATED_RE = re.compile(r"\bviolat\w*|\bin contravention of\b", re.IGNORECASE)
+# OCR misreads letters too ("conscnt to thc imposition", "iinposition"). A decision's sanctions part opens with a
+# "Sanctions" heading and cites the Sanction Guidelines.
+END_RE = re.compile(r"\bto\s*th[ec]\s*i\w{0,2}position\b|\bf\w{2}lowing\s*sanctions|agrees?\s*to\s*pay\s*the\s*\w*onetary|"
+                    r"CONCLUSIONS?\s+OF\s+LAW|Sanction\s+Guidelines|"
+                    r"\b(?:[IVX]+\.\s*)?SANCTIONS\b|\b(?:[IVX]+\.\s*)?Sanctions\s+(?:[A-Z]\.|FINRA|The|In|Enforcement)")
+# with OCR misspellings: "viola?d", "iolated"
+STATED_RE = re.compile(r"\bviolat\w*|\bviola\S{0,3}d\b|\biolat\w*|\bin contravention of\b|"
+                       r"\bby reason of th\w forcgoing|\bby reason of the foregoing", re.IGNORECASE)
 SUBHEAD_RE = re.compile(r"\(\s*(?:Alleged\s+)?Violations?\s+of\b.{0,300}?\)", re.IGNORECASE)
 # After masking, a sentence that quotes or explains a rule ("[RULE] prohibits registered persons from ...") says
 # which rule was charged as plainly as its number would; a complaint or tip has nothing like it. Such a sentence names
 # a rule ([RULE], "FINRA rules") and either uses a verb of obligation or quotes. A sentence that only mentions a rule
 # ("FINRA sent a request under [RULE]") stays: with the number masked it tells the model no more than the conduct.
 # Guidance (Regulatory Notices, Supplementary Material) goes either way, as does the BrokerCheck page footer.
-RULE_REF_RE = re.compile(r"\[RULE\]|\b(?:FINRA|NASD|MSRB|SEC) rules?\b", re.IGNORECASE)
+# statute citations the masking missed in OCR text ("Exchange Act § I 7(a)") count too
+RULE_REF_RE = re.compile(r"\[RULE\]|\b(?:FINRA|NASD|MSRB|SEC) rules?\b|\b(?:Exchange|Securities) Act\s*(?:Rule|§|Section)|"
+                         r"§|C\.\s*F\.\s*R\b", re.IGNORECASE)
 EXPLAIN_RE = re.compile(r"\b(?:requires?|required|requiring|provides?|prohibit(?:s|ed)?|states?|mandates?|obligates?|"
                         r"defines?|imposes?|appl(?:y|ies)|establish(?:es)?|governs?|must|shall|in pertinent part|"
                         r"is (?:designed|intended)|means|violat\w*|constitut\w*|inconsistent with)\b|[\"“”]", re.IGNORECASE)

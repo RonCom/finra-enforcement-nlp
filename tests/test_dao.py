@@ -191,3 +191,16 @@ def test_facts_section_ends_at_ocr_sanctions_line():
     text = ("FACTS AND VIOLATIVE CONDUCT Schutte never disclosed the transaction to the Firm. B. I also consent to "
             "the imposition ofthe following sanctions: A suspension of three months; and a fine of $5,000.")
     assert facts_section(text)[0] == "Schutte never disclosed the transaction to the Firm."
+
+
+def test_facts_section_ends_at_misread_and_decision_sanctions():
+    from finra_nlp.facts import facts_section, narrative
+    for tail in ("B. 1 also conscnt to thc imposition of thc following sanctions: a bar.",
+                 "Respondent also consents to the iinposition ofthe following sanctions: A censure.",
+                 "III. Sanctions FINRA's Sanction Guidelines recommend a bar.",
+                 "Sanctions A. Enforcement recommends a bar."):
+        assert facts_section("FACTS AND VIOLATIVE CONDUCT Smith ignored two requests for documents from FINRA staff. " + tail)[0] == \
+            "Smith ignored two requests for documents from FINRA staff."
+    assert facts_section("FACTS Smith sold. By reason of thc forcgoing, Rcspondem viola?d NASD Rule 2310. Ok then.")[0] \
+        == "Smith sold. Ok then."
+    assert narrative("Exchange Act § I 7(a) requires broker-dealers to keep records. Smith kept none.") == "Smith kept none."
