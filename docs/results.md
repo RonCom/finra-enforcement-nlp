@@ -1,6 +1,6 @@
 # Results
 
-Scored against the expectations in [spec.md](spec.md). The classifiers were tuned on the validation split (2023) and scored once on the test split (2024-2026, 1,143 cases) with code tagged `freeze-2` (commit b947368); the full output is `reports/test_results.md`. Every rule changed after data was seen is in the spec's change log, dated, with the reason. The retrieval part (H3, H4, H5) and the full-document comparison (H6) are not run yet.
+Scored against the expectations in [spec.md](spec.md). The classifiers were tuned on the validation split (2023) and scored once on the test split (2024-2026, 1,143 cases) with code tagged `freeze-2` (commit b947368); the full output is `reports/test_results.md`. Every rule changed after data was seen is in the spec's change log, dated, with the reason. The full-document comparison (H6) was scored once on 300 test cases with code tagged `freeze-3` (commit 96a1419); the output is `reports/h6_results.md`. The retrieval part (H3, H4, H5) is not run yet.
 
 ## Expectations
 
@@ -11,7 +11,7 @@ Scored against the expectations in [spec.md](spec.md). The classifiers were tune
 | H3 | Retrieval: a cited rule in the top 5 chunks | ≥ 70% | | Not run yet |
 | H4 | Out-of-scope questions declined | ≥ 18 of 20 | | Not run yet |
 | H5 | LLM judge vs. hand labels, Cohen's κ | ≥ 0.60 | | Not run yet |
-| H6 | Full AWC vs. monthly summary as input | Gain ≥ 0.03 | | Not run yet |
+| H6 | Full AWC vs. monthly summary as input | Gain ≥ 0.03 | -0.067 (0.614 vs 0.681), 95% interval -0.114 to -0.016 | Failed: summaries are enough for triage |
 
 ## Test split
 
@@ -64,6 +64,33 @@ Monthly summaries are short, written by FINRA staff, and name the conduct in the
 
 For H2, the zero-shot model came within 0.03 of the trained models with no labeled cases, given only a one-line description of each series. Labeled data bought 0.03 macro-F1 and better-calibrated probabilities; it also bought the ability to learn FINRA's charging conventions, which is where the zero-shot model's errors concentrate.
 
+## H6: facts section vs. summary
+
+The labels come from the documents' violation sentences, so the document input is its facts section with every sentence that states a violation, explains or quotes a rule, or discusses the sanction removed, and rule numbers masked (spec change log, 2026-10-11). A second ModernBERT was trained on 4,007 training cases' facts sections the same way as the summary model (three seeds averaged, 1,024 tokens) and compared on 300 test cases with a facts section, drawn at random.
+
+| Input | Macro-F1, all series | Macro-F1, series with 10+ cases in the sample |
+| --- | --- | --- |
+| Monthly summary | 0.681 | 0.835 |
+| Facts section | 0.614 | 0.773 |
+
+The facts model is behind by 0.067 (paired bootstrap 95% interval -0.114 to -0.016; no resample above 0), so H6 fails in the other direction: the summary is the better input.
+
+| Series | Sample cases | Summary | Facts |
+| --- | --- | --- | --- |
+| FINRA:3000 | 133 | 0.962 | 0.930 |
+| FINRA:8000 | 72 | 0.972 | 0.959 |
+| SEC_RULE | 43 | 0.750 | 0.627 |
+| FINRA:4000 | 42 | 0.916 | 0.861 |
+| FINRA:2000 | 36 | 0.737 | 0.747 |
+| SEC_SECTION | 29 | 0.731 | 0.571 |
+| FINRA:1000 | 17 | 0.857 | 0.600 |
+| MSRB | 13 | 0.963 | 1.000 |
+
+- **The losses are where the charge depends on drafting.** The statutes (SEC_RULE -0.12, SEC_SECTION -0.16) lose the most: the sentences that separate Section 17(a) from Rule 17a-4 explain the statute, and those were removed so the facts wouldn't name the charge. A summary keeps a phrase like "books and records requirements of the Exchange Act".
+- **FINRA:1000 is over-predicted from facts** (33 predicted against 17 true). Facts sections mention Form U4, registration and statutory disqualification as background in many cases; the summary mentions them only when they were charged.
+- **Where the conduct names the series, the two inputs tie:** 8210 cooperation, supervision, MSRB, trade reporting (FINRA:6000, 0.800 each).
+- **The comparison isn't neutral to the document.** The facts input is what remains after removing every sentence that would give the label away, and those removals take some conduct with them. A model reading the whole document would score higher by reading the answer. What H6 shows is that FINRA's one-paragraph summary carries at least as much usable signal as the stripped narrative it was written from.
+
 ## Labels
 
 - 6,111 of 6,198 cases have labels: violation sentences of the full case document, then the monthly summary's citations (20 cases), then OCR of scanned or garbled PDFs (114 cases).
@@ -73,6 +100,7 @@ For H2, the zero-shot model came within 0.03 of the trained models with no label
 ## Limits
 
 - **Label noise** of 3-5% of cases at the series level is about the size of the differences between models.
-- **Summaries only.** The classifiers read the monthly-report summary, written after the case by staff who know the charges; scores are an upper bound for classifying a complaint or tip (stated in advance).
+- **Summaries only.** The classifiers read the monthly-report summary, written after the case by staff who know the charges; scores are an upper bound for classifying a complaint or tip (stated in advance). H6 tested the document's facts section instead and found it worse, not better.
+- **Facts extraction is rule-based.** Five extraction rounds, each checked on printed samples before training; about 3 of 5,493 facts texts keep sanction boilerplate the OCR misread, and 204 cases were left out as too short.
 - **One zero-shot model and prompt.** Series descriptions were written by hand from the Rulebook's table of contents (the Rulebook download is pending); prompt v2 was chosen on validation over v1.
 - **One fine-tuned architecture,** three seeds averaged; no hyperparameter search beyond positive-class weights and epoch count.
