@@ -32,7 +32,9 @@ PAGES = [
           "and cooperate with requests made under this rule, in writing or electronically. " * 3),
     _page("4511", "4511. General Requirements", "Members shall make and preserve books and records as required "
           "under the FINRA rules and the Exchange Act. " * 3),
-    _page("0100", "0100. Short", "Too short to index."),
+    _page("0110", "0110. Short", "Too short to index."),
+    _page("3000", "3000. SUPERVISION AND RESPONSIBILITIES", "3110. Supervision 3120. Supervisory Control System "
+          "3130. Annual Certification of Compliance and Supervisory Processes " * 3),
 ]
 
 
@@ -90,7 +92,7 @@ def test_bm25_ranks_matching_chunk_first():
 def test_index_and_retrieval(tmp_path):
     rb, rdb = _rulebook(tmp_path), str(tmp_path / "rag.duckdb")
     chunks = rag.build_index(rb, rdb, FakeEmbedder())
-    assert sorted(chunks.rule_no.unique()) == ["3110", "4511", "8210"]  # 0100 too short
+    assert sorted(chunks.rule_no.unique()) == ["3110", "4511", "8210"]  # 0110 too short; 3000 is a series page
     idx = rag.Index(rdb, FakeEmbedder())
     for m in rag.RETRIEVERS:
         assert idx.rank("refused to give testimony", m, 1).rule_no.iloc[0] == "8210"

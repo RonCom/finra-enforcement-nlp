@@ -14,7 +14,7 @@ is scored once under a freeze tag (`retrieval --split test`).
 Settings (shell): OLLAMA_URL, RAG_EMBED_MODEL (default nomic-embed-text).
 
 Usage:
-    uv run python -m finra_nlp.rag index
+    uv run python -m finra_nlp.rag index --show 5             # print five rules' first chunks to check the text
     uv run python -m finra_nlp.rag retrieval                  # validation split
 """
 
@@ -69,9 +69,15 @@ def split_words(text: str, max_words: int = MAX_WORDS, overlap: int = OVERLAP) -
     return [" ".join(w[i:i + max_words]) for i in range(0, max(1, len(w) - overlap), step)]
 
 
+# Series pages (0100, 1000, ..., 9000) list the titles of the rules in the series; no case is charged under them
+SERIES_PAGE_RE = re.compile(r"^(?:0100|\d000)$")
+
+
 def chunk_pages(pages: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for p in pages.itertuples(index=False):
+        if SERIES_PAGE_RE.match(str(p.rule_no)):
+            continue
         body = rule_body(p.text or "", p.title or "")
         if len(body.split()) < 15:
             continue
@@ -103,7 +109,7 @@ class Ollama:
         return v / np.linalg.norm(v, axis=1, keepdims=True)
 
 
-def build_index(rulebook_db: str = RULEBOOK_DB, rag_db: str = RAG_DB, embedder=None) -> pd.DataFrame:
+def build_index(rulebook_db: str = RULEBOOK_DB, rag_db: str = RAG_DB, embedder=None, show: int = 0) -> pd.DataFrame:
     con = duckdb.connect(rulebook_db, read_only=True)
     pages = con.execute("SELECT rule_no, title, url, text FROM raw.rulebook_pages").df()
     con.close()
@@ -117,6 +123,8 @@ def build_index(rulebook_db: str = RULEBOOK_DB, rag_db: str = RAG_DB, embedder=N
     con.close()
     print(f"{len(df)} chunks from {df.rule_no.nunique()} rules ({len(pages)} pages) in {rag_db}; median "
           f"{int(df.text.str.split().str.len().median())} words per chunk")
+    for r in df[df.part == 0].sample(min(show, len(df)), random_state=0).itertuples(index=False) if show else []:
+        print(f"\n--- {r.rule_no}: {r.title} ---\n{r.text[:800]}")
     return df
 
 
@@ -239,12 +247,13 @@ def main() -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
     i = sub.add_parser("index")
     i.add_argument("--rulebook-db", default=RULEBOOK_DB)
+    i.add_argument("--show", type=int, default=0, help="print the first chunk of this many rules")
     r = sub.add_parser("retrieval")
     r.add_argument("--db", default="data/finra.duckdb")
     r.add_argument("--split", default="validation", choices=["validation", "test"])
     a = ap.parse_args()
     if a.cmd == "index":
-        build_index(a.rulebook_db)
+        build_index(a.rulebook_db, show=a.show)
     else:
         retrieval(a.db, a.split)
 
