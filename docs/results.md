@@ -1,6 +1,6 @@
 # Results
 
-Scored against the expectations in [spec.md](spec.md). The classifiers were tuned on the validation split (2023) and scored once on the test split (2024-2026, 1,143 cases) with code tagged `freeze-2` (commit b947368); the full output is `reports/test_results.md`. Every rule changed after data was seen is in the spec's change log, dated, with the reason. The full-document comparison (H6) was scored once on 300 test cases with code tagged `freeze-3` (commit 96a1419); the output is `reports/h6_results.md`. The retrieval part (H3, H4, H5) is not run yet.
+Scored against the expectations in [spec.md](spec.md). The classifiers were tuned on the validation split (2023) and scored once on the test split (2024-2026, 1,143 cases) with code tagged `freeze-2` (commit b947368); the full output is `reports/test_results.md`. Every rule changed after data was seen is in the spec's change log, dated, with the reason. The full-document comparison (H6) was scored once on 300 test cases with code tagged `freeze-3` (commit 96a1419); the output is `reports/h6_results.md`. The retrieval part (H3, H4, H5) was scored once with code tagged `freeze-4` (commit b459136); the outputs are `reports/retrieval_test.md`, `reports/h4_results.md` and `reports/h5_results.md`.
 
 ## Expectations
 
@@ -8,9 +8,9 @@ Scored against the expectations in [spec.md](spec.md). The classifiers were tune
 | --- | --- | --- | --- | --- |
 | H1 | Fine-tuned transformer vs. TF-IDF baseline, test macro-F1 | Gain ≥ 0.05 | +0.000 (0.694 vs 0.693) | Failed |
 | H2 | Zero-shot local model vs. fine-tuned transformer, test macro-F1 | Zero-shot lower by ≥ 0.10 | Lower by 0.030 (0.664 vs 0.694) | Failed: labeled data adds little here |
-| H3 | Retrieval: a cited rule in the top 5 chunks | ≥ 70% | | Not run yet |
-| H4 | Out-of-scope questions declined | ≥ 18 of 20 | | Not run yet |
-| H5 | LLM judge vs. hand labels, Cohen's κ | ≥ 0.60 | | Not run yet |
+| H3 | Retrieval: a charged rule among the top 5 rules (BM25) | ≥ 70% | 71.3% of 950 test cases | Met |
+| H4 | Out-of-scope questions declined | ≥ 18 of 20 | 20 of 20 | Met, from a system that also declines 43% of in-scope cases |
+| H5 | LLM judge vs. hand labels, Cohen's κ | ≥ 0.60 | 0.741 (agreement 0.87) | Met; labels drafted by an assistant model and reviewed by hand |
 | H6 | Full AWC vs. monthly summary as input | Gain ≥ 0.03 | -0.067 (0.614 vs 0.681), 95% interval -0.114 to -0.016 | Failed: summaries are enough for triage |
 
 ## Test split
@@ -109,6 +109,42 @@ The facts model is behind by 0.067 (paired bootstrap 95% interval -0.114 to -0.0
 - **FINRA:1000 is over-predicted from facts** (33 predicted against 17 true). Facts sections mention Form U4, registration and statutory disqualification as background in many cases; the summary mentions them only when they were charged.
 - **Where the conduct names the series, the two inputs tie:** 8210 cooperation, supervision, MSRB, trade reporting (FINRA:6000, 0.800 each).
 - **The comparison isn't neutral to the document.** The facts input is what remains after removing every sentence that would give the label away, and those removals take some conduct with them. A model reading the whole document would score higher by reading the answer. What H6 shows is that FINRA's one-paragraph summary carries at least as much usable signal as the stripped narrative it was written from.
+
+## Retrieval and answers (H3, H4, H5)
+
+The index holds the 657 FINRA rules with text of their own (2,399 chunks of 250 words); case queries search the conduct rules (0100-8000), the only part any validation case was charged under. The query is the masked summary without its sanction and procedure sentences. A local model (gemma4:26b) answers from the top 5 rules' best chunks, citing rules or declining. Every design choice was made on validation and logged before the test run: the query cleanup, one chunk per rule, the conduct-rule filter, BM25 over hybrid, and answer prompt v2 of three.
+
+### H3: retrieval, test split
+
+| Retriever | A charged rule in the top 5 | MRR |
+| --- | --- | --- |
+| BM25 (judged) | **0.713** | 0.512 |
+| Hybrid (BM25 + nomic-embed-text, reciprocal rank fusion) | 0.672 | 0.483 |
+| Dense (nomic-embed-text) | 0.463 | 0.301 |
+
+950 of 1,143 test cases were charged with a FINRA Rulebook rule other than 2010 and are scored. H3 is met by 1.3 points; validation was 0.644, so the margin is thin. By series (hybrid): trade reporting 0.91, offerings and trading 0.90, supervision 0.80, suitability and communications 0.77, investigations (8210) 0.62, books and records and net capital 0.54, registration 0.52. Four test charges were under the Uniform Practice and arbitration codes, which a conduct-rule search can't return.
+
+- **Word matching beat embeddings at every step.** Summaries and rules share their key words ("supervise", "outside business activity"), and fusing in the weaker dense ranking lowered BM25's result. A larger embedding model (bge-m3) raised dense slightly and lowered hybrid.
+- **The summary's sanction sentence was the biggest single problem.** The first validation run retrieved FINRA's rules on sanctions (8310, 8320, BrokerCheck disclosure) because every summary opens with "censured and fined"; removing those sentences took hybrid from 0.27 to 0.51 on validation.
+
+### H4: out-of-scope questions
+
+All 20 out-of-scope questions were declined (pass line 18), including the four near misses where retrieval surfaced a related FINRA rule (2241, 5123, the arbitration codes). The same system declines 43 of 100 in-scope test cases, so H4 shows the decline works when it should; it doesn't show the system answers when it should.
+
+### H5: the LLM judge
+
+| | Judge: correct | Judge: incorrect |
+| --- | --- | --- |
+| Hand: correct | 38 | 13 |
+| Hand: incorrect | 0 | 49 |
+
+Cohen's κ 0.741, agreement 0.87, on 100 random test answers. Every disagreement goes one way: the judge called 13 answers incorrect that the hand labels called correct, and never the reverse, so the judge's correct rate (0.38) understates the hand-labeled rate (0.51).
+
+**How the hand labels were made.** An assistant model (Claude, not the local judge) drafted all 100 labels blind to the judge's labels, with a written reason per row; the author reviewed every row against the case summary and changed none. Six close calls were flagged for review and kept as drafted: a cited rule of the right kind for a different product (6140 for Treasury spoofing, 2220 for promissory-note communications, 6622 for TRACE reporting) or a related rule (5122, 5310, 3280) counted as related, not unrelated. On a strict reading those six would be incorrect. So H5 measures agreement between the local judge and a second model's labels confirmed by a person; a person labeling from scratch could land differently.
+
+### What the answers are worth
+
+On the 100 test cases, 43 answers declined and 55 cited a charged rule. Of the 57 that answered, 51 cited a charged rule and nothing unrelated. Retrieval put a charged rule in front of the model for 71% of cases, so the answer step loses about a quarter of the cases retrieval got right, nearly all to declines: the model declines when no excerpt covers every part of the conduct, and three prompt versions didn't change that (spec change log).
 
 ## Labels
 
