@@ -2,6 +2,10 @@
 
 Predicts which rules a FINRA disciplinary action charged from the case facts, and tests whether a RAG system over the FINRA Rulebook retrieves and cites the same rules. The plan and every expectation are in [docs/spec.md](docs/spec.md), written before any data was pulled.
 
+## FINRA material
+
+The case summaries, case documents and FINRA Rulebook text this project reads are © Financial Industry Regulatory Authority, Inc. (FINRA), which reserves all rights in them. They're used here for non-commercial research as fair use (17 U.S.C. § 107); see the spec's change log. FINRA text isn't redistributed: `data/` stays local, and reports quote only short excerpts.
+
 ## Setup
 
 ```powershell
